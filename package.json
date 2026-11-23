@@ -1,0 +1,30 @@
+{
+  "name": "blackbox-store",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "^22.18.0" },
+  "workspaces": ["server", "apps/web"],
+  "scripts": {
+    "dev": "concurrently -k \"npm run dev -w server\" \"npm run dev -w apps/web\"",
+    "start": "npm run start -w server",
+    "owner:setup": "npm run owner:setup -w server",
+    "build": "npm run typecheck && npm run build -w apps/web",
+    "typecheck": "npm run typecheck --workspaces",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "npm run test:core && npm run test:api",
+    "test:core": "node --test server/tests/drive.test.ts",
+    "test:api": "node --test server/tests/api.test.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "concurrently": "^9.0.0",
+    "eslint": "^9.0.0",
+    "globals": "^16.0.0",
+    "prettier": "^3.5.0",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.0.0"
+  }
+}

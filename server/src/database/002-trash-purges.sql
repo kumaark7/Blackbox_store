@@ -1,0 +1,3 @@
+CREATE TABLE trash_purges (
+  node_id TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE
+) STRICT;
