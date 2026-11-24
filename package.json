@@ -15,7 +15,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "npm run test:core && npm run test:api",
-    "test:core": "node --test server/tests/drive.test.ts",
+    "test:core": "node --test server/tests/drive.test.ts server/tests/google-drive.test.ts server/tests/mega.test.ts server/tests/terabox.test.ts server/tests/telegram.test.ts",
     "test:api": "node --test server/tests/api.test.ts"
   },
   "devDependencies": {

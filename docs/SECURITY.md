@@ -8,4 +8,6 @@ The browser uses HttpOnly and SameSite=Strict cookies, with Secure and the Host 
 
 Virtual names are validated and never used as storage paths. Downloads are authenticated attachments with MIME sniffing disabled. JSON bodies, streamed uploads, concurrent uploads and upload duration are bounded. Create the data directory under an account with appropriate filesystem permissions.
 
-The local milestone stores plaintext. Use test data before encryption and backup recovery are verified. TOTP, secure deployment checks and cloud secret storage belong to later milestones.
+Previews require the same owner session and file visibility as downloads. The server checks the extension and file signature against a narrow image and PDF allowlist. The web client fetches the bytes into a temporary browser object URL for a local image decoder or PDF viewer. Direct requests return a no-store attachment with a sandboxed content policy.
+
+New uploads are encrypted at rest. The server handles plaintext during transfers and uses the key in `storage.key`. Live SQLite metadata and files uploaded before Milestone 2 are still readable from disk. Restrict filesystem access to the drive directory and store encrypted backups separately. Google Drive receives encrypted objects under opaque IDs. The Desktop OAuth connector uses PKCE, binds consent to a state value on a loopback callback, and encrypts the refresh token on disk. TOTP and deployment checks remain future work.

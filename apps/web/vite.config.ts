@@ -12,20 +12,19 @@ export default defineConfig(({ mode }) => {
       configureServer(server) {
         server.middlewares.use(async (request, response, next) => {
           const path = request.url?.split('?')[0];
-          if (!['GET', 'HEAD'].includes(request.method ?? '') || !['/', '/drive', '/drive/'].includes(path ?? '')) {
+          if (!['GET', 'HEAD'].includes(request.method ?? '')
+            || !['/', '/drive', '/connections', '/connections/telegram-help', '/account'].includes(path?.replace(/\/$/, '') || '/')) {
             return next();
           }
           response.setHeader('Cache-Control', 'no-store');
-          if (path !== '/') {
-            try {
-              const status = await fetch(target + '/api/auth/status', {
-                headers: { cookie: request.headers.cookie ?? '' },
-                signal: AbortSignal.timeout(3000),
-              });
-              if (status.ok && (await status.json()).authenticated === true) return next();
-            } catch {
-              // Fall back to sign-in if the API cannot confirm the session.
-            }
+          try {
+            const status = await fetch(target + '/api/auth/status', {
+              headers: { cookie: request.headers.cookie ?? '' },
+              signal: AbortSignal.timeout(3000),
+            });
+            if (status.ok && (await status.json()).authenticated === true) return next();
+          } catch {
+            // Fall back to sign-in if the API cannot confirm the session.
           }
           response.writeHead(302, { Location: '/login' }).end();
         });

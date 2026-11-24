@@ -5,9 +5,13 @@ import { createRoot } from 'react-dom/client';
 import { api, sessionEnded } from './api';
 import type { AuthStatus } from './api';
 import { Brand } from './Brand';
+import { DashboardHome } from './StorageDashboard';
 import './styles.css';
 
 const FileManager = lazy(() => import('./FileManager').then((module) => ({ default: module.FileManager })));
+const AccountConnections = lazy(() => import('./AccountSettings').then((module) => ({ default: module.AccountConnections })));
+const TelegramHelp = lazy(() => import('./AccountSettings').then((module) => ({ default: module.TelegramHelp })));
+const LoginManagement = lazy(() => import('./AccountSettings').then((module) => ({ default: module.LoginManagement })));
 const signOut = () => window.location.replace('/login');
 
 function App() {
@@ -21,7 +25,8 @@ function App() {
     api<AuthStatus>('/auth/status', { signal: controller.signal })
       .then((status) => {
         if (controller.signal.aborted) return;
-        const path = status.authenticated ? '/drive' : '/login';
+        const requested = window.location.pathname.replace(/\/$/, '');
+        const path = status.authenticated ? (['/drive', '/connections', '/connections/telegram-help', '/account'].includes(requested) ? requested : '/') : '/login';
         if (window.location.pathname !== path) window.location.replace(path);
         else setAuth(status);
       })
@@ -33,8 +38,11 @@ function App() {
   }, [attempt]);
 
   if (auth?.authenticated) {
+    if (window.location.pathname === '/') return <DashboardHome onLogout={signOut} />;
     return <Suspense fallback={<p className="empty" role="status">Loading drive.</p>}>
-      <FileManager onLogout={signOut} />
+      {window.location.pathname === '/connections' ? <AccountConnections onLogout={signOut} />
+        : window.location.pathname === '/connections/telegram-help' ? <TelegramHelp onLogout={signOut} />
+        : window.location.pathname === '/account' ? <LoginManagement onLogout={signOut} /> : <FileManager onLogout={signOut} />}
     </Suspense>;
   }
 
@@ -52,7 +60,7 @@ function App() {
         <h1>Set up your drive</h1>
         <p>Run <code>npm run owner:setup</code> in the server terminal to create your owner password.</p>
         <button className="primary" onClick={() => setAttempt((current) => current + 1)}>Check setup</button>
-      </> : <Login onSuccess={() => window.location.replace('/drive')} />}
+      </> : <Login onSuccess={() => window.location.replace('/')} />}
     </section>
   </main>;
 }

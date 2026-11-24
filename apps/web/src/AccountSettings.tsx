@@ -1,0 +1,326 @@
+import { useEffect, useRef, useState } from 'react';
+import type { FormEvent, ReactNode } from 'react';
+import { api } from './api';
+import type { CloudStatus } from './api';
+import { Workspace } from './Workspace';
+
+const providers = {
+  googleDrive: 'Google Drive', mega: 'MEGA', terabox: 'TeraBox',
+  telegram: 'Telegram Backup Channel', telegramBot: 'Telegram Upload Bot',
+} as const;
+type Provider = keyof typeof providers;
+type Step = { kind: 'google'; url: string } | { kind: 'qr' } | { kind: 'input'; id: string; message: string }
+  | { kind: 'teraboxWeb'; id: string; url: string };
+type Connections = {
+  providers: Record<Provider, CloudStatus>;
+  googleRedirectUri: string;
+  googleReady: boolean;
+  teraboxReady: boolean;
+  telegramBotUsername?: string;
+  flow: { provider: Provider; status: 'pending' | 'connected' | 'failed'; error?: string; step?: Step } | null;
+};
+type Sessions = { expiresAt: number; activeSessions: number };
+const statusLabels: Record<CloudStatus, string> = { off: 'Disconnected', reconnect: 'Reconnect required', retrying: 'Sync retrying', connected: 'Connected' };
+const providerKeys = Object.keys(providers) as Provider[];
+
+function SettingsPage({ page, title, children, onLogout }: {
+  page: 'connections' | 'account'; title: string; children: ReactNode; onLogout: () => void;
+}) {
+  const [error, setError] = useState('');
+  async function signOut() {
+    try {
+      await api('/auth/logout', { method: 'POST' });
+      onLogout();
+    } catch (failure) {
+      setError((failure as Error).message);
+    }
+  }
+  return <Workspace page={page} onSignOut={() => void signOut()}>
+    <main className="main"><div className="content settings-page">
+      <h1>{title}</h1>
+      {error && <p className="error" role="alert">{error}</p>}
+      {children}
+    </div></main>
+  </Workspace>;
+}
+
+function field(label: string, name: string, type = 'text', maxLength = 1024) {
+  return <label className="field">{label}<input required name={name} type={type} maxLength={maxLength} autoComplete="off" /></label>;
+}
+
+function ProviderFields({ provider, redirect }: { provider: Provider; redirect: string }) {
+  if (provider === 'googleDrive') return <>
+    <label className="field">OAuth client type<select name="clientType">
+      <option value="web">Web application</option>
+      {redirect.startsWith('http://') && <option value="installed">Desktop app on this computer</option>}
+    </select></label>
+    <p className="muted">For a Web application client, register this redirect URI in Google Cloud.</p>
+    <code className="redirect-uri">{redirect}</code>
+    {field('Client ID', 'clientId', 'text', 256)}
+    {field('Client secret', 'clientSecret', 'password')}
+  </>;
+  if (provider === 'mega') return <>
+    {field('Email', 'email', 'email', 254)}
+    {field('MEGA password', 'password', 'password')}
+    <details><summary>Use a different folder</summary><label className="field">MEGA folder
+      <input name="folder" placeholder="BlackboxStore" maxLength={180} pattern="[A-Za-z0-9_/-]+" />
+    </label></details>
+  </>;
+  if (provider === 'terabox') return <>
+    {field('AppKey', 'clientId')}
+    {field('SecretKey', 'clientSecret', 'password')}
+    {field('PrivateSecret', 'privateSecret', 'password')}
+    {field('Assigned application folder', 'appFolder')}
+  </>;
+  if (provider === 'telegramBot') return <>
+    <p className="muted">Use a dedicated bot from BotFather. Send documents in a private chat and choose their storage priority.</p>
+    {field('Bot token', 'botToken', 'password', 221)}
+    {field('Your numeric Telegram user ID', 'ownerId', 'text', 16)}
+  </>;
+  return <>
+    <label className="field">API ID<input name="apiId" type="number" min="1" max="2147483647" required /></label>
+    {field('API hash', 'apiHash', 'password', 32)}
+    {field('Private channel ID', 'channelId', 'text', 16)}
+  </>;
+}
+
+function TeraBoxFrame({ step, onCode }: { step: Extract<Step, { kind: 'teraboxWeb' }>; onCode: (id: string, code: string) => Promise<void> }) {
+  const frame = useRef<HTMLIFrameElement>(null);
+  const submitted = useRef(false);
+  useEffect(() => {
+    function receive(event: MessageEvent) {
+      if (event.origin !== 'https://www.terabox.com' || event.source !== frame.current?.contentWindow || submitted.current) return;
+      let payload: unknown = event.data;
+      if (typeof payload === 'string') {
+        if (payload.length > 16_384) return;
+        try { payload = JSON.parse(payload); } catch { return; }
+      }
+      if (!payload || typeof payload !== 'object' || !('event' in payload) || payload.event !== 'teraboxOauth') return;
+      const data = 'data' in payload ? payload.data : undefined;
+      const code = 'code' in payload ? payload.code : typeof data === 'object' && data && 'code' in data ? data.code : data;
+      if (typeof code !== 'string' || !code || code.length > 1024) return;
+      submitted.current = true;
+      void onCode(step.id, code).finally(() => { submitted.current = false; });
+    }
+    window.addEventListener('message', receive);
+    return () => window.removeEventListener('message', receive);
+  }, [onCode, step.id]);
+  return <iframe className="terabox-login" ref={frame} title="Sign in to TeraBox" src={step.url}
+    sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" />;
+}
+
+export function AccountConnections({ onLogout }: { onLogout: () => void }) {
+  const [state, setState] = useState<Connections | null>(null);
+  const [provider, setProvider] = useState<Provider>('googleDrive');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [teraOptions, setTeraOptions] = useState(false);
+  const [teraMethod, setTeraMethod] = useState<'web' | 'qr' | null>(null);
+  const pending = state?.flow?.status === 'pending';
+  useEffect(() => {
+    const controller = new AbortController();
+    const update = () => api<Connections>('/connections', { signal: controller.signal })
+      .then((result) => { if (!controller.signal.aborted) setState(result); })
+      .catch((failure: Error) => { if (!controller.signal.aborted) setError(failure.message); });
+    void update();
+    const timer = pending ? window.setInterval(() => void update(), 1250) : undefined;
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, [pending]);
+
+  async function start(input: Record<string, unknown>, form?: HTMLFormElement) {
+    setBusy(true);
+    setError('');
+    try {
+      const body = { ...input, provider, ...(provider === 'telegram' ? { apiId: Number(input.apiId) } : {}) };
+      const result = await api<Connections>('/connections', { method: 'POST', body: JSON.stringify(body) });
+      form?.reset();
+      setState(result);
+      if (result.flow?.step?.kind === 'google') window.location.assign(result.flow.step.url);
+    } catch (failure) {
+      setError((failure as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function startForm(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const input = Object.fromEntries(new FormData(form));
+    if (provider === 'mega' && !input.folder) delete input.folder;
+    void start(input, form);
+  }
+
+  function chooseTeraMethod(method: 'web' | 'qr') {
+    setTeraMethod(method);
+    if (state?.teraboxReady) void start({ method });
+  }
+
+  function reply(event: FormEvent<HTMLFormElement>, id: string) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const value = String(new FormData(form).get('value') ?? '');
+    form.reset();
+    void completeStep(id, value);
+  }
+
+  async function completeStep(id: string, value: string) {
+    setBusy(true);
+    setError('');
+    try {
+      await api('/connections/answer', { method: 'POST', body: JSON.stringify({ id, value }) });
+      setState(await api<Connections>('/connections'));
+    } catch (failure) {
+      setError((failure as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancel() {
+    setError('');
+    try { await api('/connections/flow', { method: 'DELETE' }); }
+    catch (failure) { setError((failure as Error).message); }
+  }
+
+  const flow = state?.flow;
+  const step = flow?.step;
+  const connectLabel = (state?.providers[provider] === 'off' ? 'Connect ' : 'Reconnect ') + providers[provider];
+  const setupForm = state && <form key={provider} className="settings-form" onSubmit={startForm}>
+    <ProviderFields provider={provider} redirect={state.googleRedirectUri} />
+    {provider === 'terabox' && teraMethod && <input type="hidden" name="method" value={teraMethod} />}
+    <button className="primary" disabled={busy}>{busy ? 'Starting connection' : connectLabel}</button>
+  </form>;
+  return <SettingsPage page="connections" title="Account connections" onLogout={onLogout}>
+    {error && <p className="error" role="alert">{error}</p>}
+    {state ? <>
+      <div className="provider-options">
+        {providerKeys.map((key) => <button type="button" key={key} disabled={pending || busy}
+          aria-pressed={provider === key} onClick={() => { setProvider(key); setTeraOptions(false); setTeraMethod(null); }}>
+          <strong>{providers[key]}</strong><small>{statusLabels[state.providers[key]]}</small>
+        </button>)}
+      </div>
+      {pending && flow ? <section className="settings-panel">
+        <h2>Connect {providers[flow.provider]}</h2>
+        {step?.kind === 'google' ? <a href={step.url}>Continue with Google</a>
+          : step?.kind === 'teraboxWeb' ? <TeraBoxFrame key={step.id} step={step} onCode={completeStep} />
+          : step?.kind === 'qr' ? <><p>Scan this QR code with the TeraBox mobile app.</p>
+            <img className="connection-qr" src="/api/connections/qr" alt="TeraBox authorization QR code" /></>
+            : step?.kind === 'input' ? <form key={step.id} className="settings-form" onSubmit={(event) => reply(event, step.id)}>
+              {field(step.message, 'value', 'password')}
+              <button className="primary" disabled={busy}>Continue</button>
+            </form> : <p role="status">Waiting for {providers[flow.provider]}</p>}
+        <button type="button" onClick={() => void cancel()}>Cancel connection</button>
+      </section> : <section className="settings-panel">
+        {flow?.status === 'failed' && <p className="error" role="alert">{flow.error}</p>}
+        {flow?.status === 'connected' && <p role="status">{providers[flow.provider]} connected.</p>}
+        <h2>{providers[provider]}</h2>
+        {(provider === 'telegram' || provider === 'telegramBot') && <a href="/connections/telegram-help">Telegram setup instructions</a>}
+        {provider === 'telegramBot' && state.telegramBotUsername && <a href={'https://t.me/' + state.telegramBotUsername}
+          target="_blank" rel="noopener noreferrer">Open @{state.telegramBotUsername} in Telegram</a>}
+        {provider === 'googleDrive' ? <>
+          {state.googleReady ? <button type="button" className="primary" disabled={busy}
+            onClick={() => void start({})}>{busy ? 'Opening Google' : connectLabel}</button>
+            : <p className="muted">Set up the Google OAuth client once to enable sign-in.</p>}
+          <details><summary>Google OAuth setup</summary>
+            <p className="muted">Enable the Drive API and create an OAuth client in
+              {' '}<a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener noreferrer">Google Cloud</a>.</p>
+            {setupForm}
+          </details>
+        </> : provider === 'terabox' ? <>
+          {!teraOptions ? <button type="button" className="primary" onClick={() => setTeraOptions(true)}>{connectLabel}</button>
+            : <><div className="connection-methods" aria-label="TeraBox sign-in methods">
+              <button type="button" disabled={busy} aria-pressed={teraMethod === 'web'} onClick={() => chooseTeraMethod('web')}>Sign in on TeraBox</button>
+              <button type="button" disabled={busy} aria-pressed={teraMethod === 'qr'} onClick={() => chooseTeraMethod('qr')}>Scan a QR code</button>
+            </div>{teraMethod && !state.teraboxReady && <><p className="muted">Create a
+              {' '}<a href="https://www.terabox.com/integrations" target="_blank" rel="noopener noreferrer">TeraBox Open Platform app</a>
+              {' '}once to enable both sign-in methods.</p>{setupForm}</>}</>}
+        </> : setupForm}
+      </section>}
+    </> : !error && <p role="status">Loading connections</p>}
+  </SettingsPage>;
+}
+
+export function TelegramHelp({ onLogout }: { onLogout: () => void }) {
+  return <SettingsPage page="connections" title="Telegram setup" onLogout={onLogout}>
+    <a href="/connections">Back to Account connections</a>
+    <section className="settings-panel">
+      <h2>Backup channel</h2>
+      <ol className="setup-steps">
+        <li>Open <a href="https://my.telegram.org" target="_blank" rel="noopener noreferrer">my.telegram.org</a>, sign in, and select <strong>API development tools</strong>. Create an app to get its API ID and API hash.</li>
+        <li>Create a private Telegram channel you own. Post a message and copy its link. In <code>https://t.me/c/1234567890/17</code>, the channel ID is <code>1234567890</code>.</li>
+        <li>In Account connections, select <strong>Telegram Backup Channel</strong>, enter those three values, then follow the phone and verification prompts. The server needs the Telegram MTProto client installed.</li>
+      </ol>
+    </section>
+    <section className="settings-panel">
+      <h2>Upload bot</h2>
+      <ol className="setup-steps">
+        <li>Open <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">@BotFather</a> and send <code>/newbot</code>. Copy the token it gives you.</li>
+        <li>In Telegram Desktop, open <strong>Settings → Advanced → Export Telegram data</strong>. Export <strong>Account information</strong> as JSON. Open <code>result.json</code> on your computer and find <code>user_id</code> under <code>personal_information</code>.</li>
+        <li>Enter the token and user ID under <strong>Telegram Upload Bot</strong>. Open the bot from the connection page, tap <strong>Start</strong>, and send a document as a file.</li>
+      </ol>
+    </section>
+  </SettingsPage>;
+}
+
+export function LoginManagement({ onLogout }: { onLogout: () => void }) {
+  const [sessions, setSessions] = useState<Sessions | null>(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    api<Sessions>('/account/sessions', { signal: controller.signal })
+      .then((result) => { if (!controller.signal.aborted) setSessions(result); })
+      .catch((failure: Error) => { if (!controller.signal.aborted) setError(failure.message); });
+    return () => controller.abort();
+  }, []);
+
+  async function submit(path: string, body?: string) {
+    setBusy(true);
+    setError('');
+    try {
+      await api(path, { method: 'POST', body });
+      if (path === '/account/password') onLogout();
+      else setSessions(await api<Sessions>('/account/sessions'));
+    } catch (failure) {
+      setError((failure as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function changePassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const { current, password, confirmation } = Object.fromEntries(new FormData(form));
+    if (password !== confirmation) {
+      setError('The new passwords do not match.');
+      return;
+    }
+    form.reset();
+    void submit('/account/password', JSON.stringify({ current, password }));
+  }
+
+  return <SettingsPage page="account" title="Login management" onLogout={onLogout}>
+    {error && <p className="error" role="alert">{error}</p>}
+    <section className="settings-panel">
+      <h2>Sessions</h2>
+      {sessions && <>
+        <p role="status">{sessions.activeSessions} active {sessions.activeSessions === 1 ? 'session' : 'sessions'}</p>
+        <p className="muted">This session expires {new Date(sessions.expiresAt).toLocaleString()}.</p>
+        <button type="button" disabled={busy || sessions.activeSessions < 2}
+          onClick={() => void submit('/account/sessions/revoke-others')}>Sign out other sessions</button>
+      </>}
+    </section>
+    <section className="settings-panel">
+      <h2>Change owner password</h2>
+      <p className="muted">Changing the password signs out every session. Use 12 to 128 characters.</p>
+      <form className="settings-form" onSubmit={changePassword}>
+        <label className="field">Current password<input name="current" type="password" required maxLength={128} autoComplete="current-password" /></label>
+        <label className="field">New password<input name="password" type="password" required minLength={12} maxLength={128} autoComplete="new-password" /></label>
+        <label className="field">Confirm new password<input name="confirmation" type="password" required minLength={12} maxLength={128} autoComplete="new-password" /></label>
+        <button className="primary" disabled={busy}>Change password</button>
+      </form>
+    </section>
+  </SettingsPage>;
+}

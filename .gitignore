@@ -7,5 +7,15 @@ coverage/
 !.env.example
 *.sqlite
 *.sqlite-*
+storage.key
+recovery.key
+google-drive.credentials*
+mega.credentials*
+terabox.credentials*
+terabox-connect*.json
+telegram.credentials*
+telegram-upload-bot.credentials*
+telegram-connect*.json
+client_secret*.json
 *.log
 /BlackboxStore-milestone1-source.zip

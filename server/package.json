@@ -6,6 +6,11 @@
     "dev": "node --env-file-if-exists=../.env --watch src/index.ts",
     "start": "node --env-file-if-exists=../.env src/index.ts",
     "owner:setup": "node --env-file-if-exists=../.env src/setup.ts",
+    "recovery": "node --env-file-if-exists=../.env src/recovery.ts",
+    "google-drive:connect": "node --env-file-if-exists=../.env src/google-drive-connect.ts",
+    "mega:connect": "node --env-file-if-exists=../.env src/mega-connect.ts",
+    "terabox:connect": "node --env-file-if-exists=../.env src/terabox-connect.ts",
+    "telegram:connect": "node --env-file-if-exists=../.env src/telegram-connect.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

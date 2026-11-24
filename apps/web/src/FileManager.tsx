@@ -1,26 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import {
-  Archive, ArrowDownToLine, ArrowLeft, ArrowRight, ChevronRight, Ellipsis, File as FileIcon, Folder,
-  FolderPlus, Grid2X2, HardDrive, List, LogOut, Search, Trash2, Upload, X,
+  Archive, ArrowDownToLine, ArrowLeft, ArrowRight, ChevronRight, Cloud, Ellipsis, File as FileIcon, Folder,
+  Eye, FolderPlus, Grid2X2, HardDrive, List, Search, Trash2, Upload, X,
 } from 'lucide-react';
-import { api, getEntries, labels, ROOT_ID, uploadFile } from './api';
-import type { Entry, Importance, Listing, Sort } from './api';
-import { Brand } from './Brand';
+import { api, ApiError, cloudNames, getEntries, getPreview, labels, ROOT_ID, uploadFile } from './api';
+import type { CloudStatus, Entry, Importance, Listing, SavedTransfer, Sort, TeraboxCleanup } from './api';
+import { formatSize } from './formatSize';
+import { Workspace } from './Workspace';
 
 type Edit = { action: 'new' | 'rename' | 'move' | 'copy' | 'importance' | 'trash' | 'purge'; entry?: Entry };
 type Transfer = { id: number; name: string; size: number; loaded: number; status: string; error?: boolean };
 
 const pageSize = 50;
 
-function formatSize(bytes: number) {
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let index = 0;
-  while (bytes >= 1024 && index < units.length - 1) {
-    bytes /= 1024;
-    index++;
-  }
-  return new Intl.NumberFormat(undefined, { maximumFractionDigits: index ? 1 : 0 }).format(bytes) + ' ' + units[index];
+function connectionLabel(name: string, status: CloudStatus) {
+  if (status === 'reconnect') return 'Reconnect ' + name;
+  if (status === 'retrying') return name + ' retrying';
+  return name + ' connected';
 }
 
 function readImportance(): Importance {
@@ -31,13 +28,54 @@ function readImportance(): Importance {
   return 'important';
 }
 
-function Modal({ title, children, close }: { title: string; children: ReactNode; close: () => void }) {
+function Modal({ title, children, close, className }: { title: string; children: ReactNode; close: () => void; className?: string }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { dialog.current?.showModal(); }, []);
-  return <dialog ref={dialog} aria-label={title} onCancel={(event) => { event.preventDefault(); close(); }}>
+  return <dialog ref={dialog} className={className} aria-label={title} onCancel={(event) => { event.preventDefault(); close(); }}>
     <header className="modal-heading"><h2>{title}</h2><button className="icon" aria-label="Close" onClick={close}><X size={18} /></button></header>
     {children}
   </dialog>;
+}
+
+const previewImages = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
+function FilePreview({ entry, close }: { entry: Entry; close: () => void }) {
+  const browserCanShowPdf = navigator.pdfViewerEnabled !== false;
+  const pdf = entry.preview === 'pdf';
+  const [url, setUrl] = useState('');
+  const [error, setError] = useState('');
+  const unsupported = pdf && !browserCanShowPdf;
+  useEffect(() => {
+    if (unsupported) return;
+    const controller = new AbortController();
+    let objectUrl = '';
+    getPreview(entry.id, controller.signal).then((blob) => {
+      if (controller.signal.aborted) return;
+      if (pdf ? blob.type !== 'application/pdf' : !previewImages.has(blob.type)) {
+        throw new Error('The file could not be previewed. You can still download it.');
+      }
+      objectUrl = URL.createObjectURL(blob);
+      setUrl(objectUrl);
+    }).catch((failure: Error) => { if (!controller.signal.aborted) setError(failure.message); });
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [entry.id, pdf, unsupported]);
+
+  const message = unsupported ? 'PDF preview is unavailable in this browser. Download the file to open it.' : error;
+  const failedToRender = () => setError('The file could not be displayed. Download the file to open it.');
+  return <Modal title={entry.name} className="preview-dialog" close={close}>
+    <div className="preview-stage" aria-busy={!message && !url}>
+      {message ? <p className="muted" role="status">{message}</p> : !url ? <p role="status">Loading preview</p> : pdf
+        ? <iframe className="pdf-preview" title={'PDF preview of ' + entry.name} src={url}
+          referrerPolicy="no-referrer" onError={failedToRender} />
+        : <img className="image-preview" alt={entry.name} src={url} onError={failedToRender} />}
+    </div>
+    <footer className="modal-actions preview-actions">
+      <a href={'/api/files/' + entry.id + '/download'}><ArrowDownToLine size={16} /> Download</a>
+    </footer>
+  </Modal>;
 }
 
 export function FileManager({ onLogout }: { onLogout: () => void }) {
@@ -52,26 +90,63 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
   const [error, setError] = useState('');
   const [revision, setRevision] = useState(0);
   const [edit, setEdit] = useState<Edit | null>(null);
+  const [preview, setPreview] = useState<Entry | null>(null);
   const [selected, setSelected] = useState<File[]>([]);
   const [importance, setImportance] = useState<Importance>(readImportance);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
+  const [savedTransfers, setSavedTransfers] = useState<SavedTransfer[]>([]);
+  const [maxUploadBytes, setMaxUploadBytes] = useState<number>();
+  const [cloud, setCloud] = useState<{ googleDrive: CloudStatus; mega: CloudStatus; terabox: CloudStatus; telegram: CloudStatus }>(
+    { googleDrive: 'off', mega: 'off', terabox: 'off', telegram: 'off' });
   const [active, setActive] = useState(false);
-  const activeUpload = useRef<(() => void) | null>(null);
+  const activeUpload = useRef<AbortController | null>(null);
   const stopQueue = useRef(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const resumeInput = useRef<HTMLInputElement>(null);
+  const resumeTarget = useRef<SavedTransfer | null>(null);
+  const googleEnabled = cloud.googleDrive === 'connected' || cloud.googleDrive === 'retrying';
+  const megaEnabled = cloud.mega === 'connected' || cloud.mega === 'retrying';
+  const teraboxEnabled = cloud.terabox === 'connected' || cloud.terabox === 'retrying';
+  const telegramEnabled = cloud.telegram === 'connected' || cloud.telegram === 'retrying';
+  const backupDestinations = [teraboxEnabled && 'TeraBox', telegramEnabled && 'Telegram'].filter(Boolean).join(' and ');
+  const cloudEnabled = googleEnabled || megaEnabled || Boolean(backupDestinations);
 
   useEffect(() => {
     const controller = new AbortController();
     setListing(null);
-    getEntries({ parentId, sort, search, offset, trash: view === 'trash' }, controller.signal)
+    const update = (initial: boolean) => getEntries({ parentId, sort, search, offset, trash: view === 'trash' }, controller.signal)
       .then((result) => { if (!controller.signal.aborted) setListing(result); })
+      .catch((failure: Error) => { if (initial && !controller.signal.aborted) setError(failure.message); });
+    void update(true);
+    const timer = cloudEnabled ? window.setInterval(() => void update(false), 5000) : undefined;
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, [parentId, sort, search, offset, view, revision, cloudEnabled]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const update = () => api<typeof cloud>('/storage', { signal: controller.signal })
+      .then((status) => { if (!controller.signal.aborted) setCloud(status); })
+      .catch(() => undefined);
+    void update();
+    const timer = window.setInterval(() => void update(), 5000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    api<{ transfers: SavedTransfer[]; maxUploadBytes: number }>('/transfers', { signal: controller.signal })
+      .then((result) => {
+        if (controller.signal.aborted) return;
+        setSavedTransfers(result.transfers);
+        setMaxUploadBytes(result.maxUploadBytes);
+      })
       .catch((failure: Error) => { if (!controller.signal.aborted) setError(failure.message); });
     return () => controller.abort();
-  }, [parentId, sort, search, offset, view, revision]);
+  }, [revision]);
 
   useEffect(() => () => {
     stopQueue.current = true;
-    activeUpload.current?.();
+    activeUpload.current?.abort();
   }, []);
 
   function navigate(folderId: string, destination: 'files' | 'trash' = 'files') {
@@ -110,12 +185,11 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
     if (files.length && !active && !search && view === 'files') setSelected(files);
   }
 
-  async function startUpload() {
-    const batch = selected;
+  async function runUploads(batch: File[], folderId: string, priority: Importance) {
     setSelected([]);
     setActive(true);
     stopQueue.current = false;
-    try { localStorage.setItem('blackbox-importance', importance); } catch { /* Preferences are optional. */ }
+    try { localStorage.setItem('blackbox-importance', priority); } catch { /* Preferences are optional. */ }
     setTransfers(batch.map((file, id) => ({ id, name: file.name, size: file.size, loaded: 0, status: 'Queued' })));
     const update = (id: number, changes: Partial<Transfer>) => setTransfers((current) =>
       current.map((transfer) => transfer.id === id ? { ...transfer, ...changes } : transfer));
@@ -126,23 +200,33 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
           update(id, { status: 'Cancelled' });
           continue;
         }
-        update(id, { status: 'Uploading' });
-        const operation = uploadFile(file, parentId, importance, (loaded, verifying) => {
-          update(id, { loaded: Math.min(loaded, file.size), status: verifying ? 'Verifying' : 'Uploading' });
-        });
-        activeUpload.current = operation.cancel;
+        update(id, { status: 'Checking file' });
+        const controller = new AbortController();
+        activeUpload.current = controller;
         try {
-          await operation.result;
+          if (maxUploadBytes !== undefined && file.size > maxUploadBytes) throw new Error('The file exceeds the upload limit.');
+          await uploadFile(file, folderId, priority, controller.signal, (loaded, status) => {
+            update(id, { loaded: Math.min(loaded, file.size), status });
+          });
           update(id, { loaded: file.size, status: 'Completed' });
         } catch (failure) {
           const cancelled = (failure as Error).name === 'AbortError';
-          update(id, { status: cancelled ? 'Cancelled' : (failure as Error).message, error: !cancelled });
+          update(id, { status: cancelled ? 'Paused' : (failure as Error).message, error: !cancelled });
         }
       }
     } finally {
       activeUpload.current = null;
       setActive(false);
       refresh();
+    }
+  }
+
+  async function discard(transfer: SavedTransfer) {
+    try {
+      await api('/transfers/' + transfer.id, { method: 'DELETE' });
+      refresh();
+    } catch (failure) {
+      setError((failure as Error).message);
     }
   }
 
@@ -158,22 +242,20 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
   const canUpload = view === 'files' && !search;
   const title = view === 'trash' ? 'Recycle bin' : search ? 'Search results' : 'My files';
 
-  return <div className="workspace">
-    <aside className="sidebar">
-      <Brand />
-      <nav aria-label="Drive">
+  return <Workspace onSignOut={() => void signOut()} filesNavigation={<>
         <button className={view === 'files' ? 'nav active' : 'nav'} onClick={() => navigate(ROOT_ID)}>
           <Folder size={18} /> My files
         </button>
         <button className={view === 'trash' ? 'nav active' : 'nav'} onClick={() => navigate(ROOT_ID, 'trash')}>
           <Trash2 size={18} /> Recycle bin
         </button>
-      </nav>
-      <div className="sidebar-bottom">
+    </>} storage={<>
         <div className="storage-label"><HardDrive size={16} /><span>Local storage</span></div>
-        <button className="nav sign-out" onClick={() => void signOut()}><LogOut size={17} /> Sign out</button>
-      </div>
-    </aside>
+        {cloud.googleDrive !== 'off' && <div className="storage-label"><Cloud size={16} />{connectionLabel('Google Drive', cloud.googleDrive)}</div>}
+        {cloud.mega !== 'off' && <div className="storage-label"><Cloud size={16} />{connectionLabel('MEGA', cloud.mega)}</div>}
+        {cloud.terabox !== 'off' && <div className="storage-label"><Cloud size={16} />{connectionLabel('TeraBox', cloud.terabox)}</div>}
+        {cloud.telegram !== 'off' && <div className="storage-label"><Cloud size={16} />{connectionLabel('Telegram', cloud.telegram)}</div>}
+    </>}>
 
     <main className="main">
       <header className="topbar">
@@ -237,7 +319,8 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
               {!grid && <div className="file-row table-heading"><span>Name</span><span>Importance</span><span>Size</span><span>Modified</span><span /></div>}
               <ul className={grid ? 'file-grid' : 'file-list'}>
                 {listing.items.map((entry) => <FileRow key={entry.id} entry={entry} grid={grid} trash={view === 'trash'}
-                  open={() => navigate(entry.id)} onEdit={(action) => setEdit({ action, entry })} restore={() => void restore(entry)} />)}
+                  open={() => navigate(entry.id)} onPreview={() => setPreview(entry)}
+                  onEdit={(action) => setEdit({ action, entry })} restore={() => void restore(entry)} />)}
               </ul>
             </>}
 
@@ -250,8 +333,8 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
 
         {transfers.length > 0 && <section className="transfers" aria-label="Uploads">
           <header><h2>Uploads</h2>
-            {active ? <button onClick={() => { stopQueue.current = true; activeUpload.current?.(); }}>Cancel uploads</button>
-              : <button onClick={() => setTransfers([])}>Clear</button>}
+            {active ? <button onClick={() => { stopQueue.current = true; activeUpload.current?.abort(); }}>Pause uploads</button>
+              : <button onClick={() => { setTransfers([]); refresh(); }}>Clear activity</button>}
           </header>
           <ul aria-live="polite">{transfers.map((transfer) => <li key={transfer.id}>
             <span className="file-name">{transfer.name}</span>
@@ -260,39 +343,79 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
             <span className={transfer.error ? 'error' : 'muted'}>{transfer.status}</span>
           </li>)}</ul>
         </section>}
+
+        {!active && savedTransfers.length > 0 && <section className="transfers" aria-label="Pending uploads">
+          <header><h2>Pending uploads</h2></header>
+          <input ref={resumeInput} hidden type="file" onChange={(event) => {
+            const file = event.target.files?.[0];
+            const transfer = resumeTarget.current;
+            event.target.value = '';
+            if (!file || !transfer) return;
+            if (file.name.trim().normalize('NFC') !== transfer.name || file.size !== transfer.size) {
+              setError('Choose the original file to resume this upload.');
+              return;
+            }
+            void runUploads([file], transfer.parentId, transfer.importance);
+          }} />
+          <ul>{savedTransfers.map((transfer) => <li key={transfer.id}>
+            <span className="file-name">{transfer.name}</span>
+            <progress aria-label={'Saved progress for ' + transfer.name} max={Math.max(transfer.size, 1)} value={transfer.received} />
+            <div className="actions">
+              <button onClick={() => { resumeTarget.current = transfer; resumeInput.current?.click(); }}>Resume</button>
+              <button onClick={() => void discard(transfer)}>Discard</button>
+            </div>
+          </li>)}</ul>
+        </section>}
       </div>
     </main>
 
     {selected.length > 0 && <Modal title={selected.length === 1 ? 'Upload file' : 'Upload files'} close={() => setSelected([])}>
-      <form onSubmit={(event) => { event.preventDefault(); void startUpload(); }}>
+      <form onSubmit={(event) => { event.preventDefault(); void runUploads(selected, parentId, importance); }}>
         <ul className="upload-files">{selected.map((file, index) => <li key={index}><span>{file.name}</span><span>{formatSize(file.size)}</span></li>)}</ul>
         <ImportanceField value={importance} change={setImportance} />
-        <p className="muted">Destination: Local storage</p>
-        {importance === 'highly-important' && <p className="warning">This file will have one copy. An independent verified copy is required for full protection.</p>}
+        <p className="muted">Encrypted local storage</p>
+        {importance === 'highly-important' && <p className={googleEnabled ? 'muted' : 'warning'}>{googleEnabled
+          ? 'A verified Google Drive copy will be added in the background.'
+          : 'A Google Drive copy will be added after you connect your account.'}</p>}
+        {importance === 'important' && <p className={megaEnabled ? 'muted' : 'warning'}>{megaEnabled
+          ? 'A verified MEGA copy will be added in the background.'
+          : 'A MEGA copy will be added after you connect your account.'}</p>}
+        {importance === 'backup' && <p className={backupDestinations ? 'muted' : 'warning'}>{backupDestinations
+          ? 'Blackbox will verify a backup copy on ' + backupDestinations + '.'
+          : 'Connect TeraBox or Telegram to add a cloud backup.'}</p>}
         <footer className="modal-actions"><button type="button" onClick={() => setSelected([])}>Cancel</button><button className="primary">Start upload</button></footer>
       </form>
     </Modal>}
 
     {edit && <EntryDialog edit={edit} parentId={parentId} close={() => setEdit(null)} success={refresh} />}
-  </div>;
+    {preview && <FilePreview key={preview.id} entry={preview} close={() => setPreview(null)} />}
+  </Workspace>;
 }
 
-function FileRow({ entry, grid, trash, open, onEdit, restore }: {
-  entry: Entry; grid: boolean; trash: boolean; open: () => void; onEdit: (action: Edit['action']) => void; restore: () => void;
+function FileRow({ entry, grid, trash, open, onPreview, onEdit, restore }: {
+  entry: Entry; grid: boolean; trash: boolean; open: () => void; onPreview: () => void;
+  onEdit: (action: Edit['action']) => void; restore: () => void;
 }) {
   const folder = entry.kind === 'folder';
+  const replicas = entry.cloudCopies.map((provider) => cloudNames[provider]).join(', ');
   const download = '/api/files/' + entry.id + '/download';
   const icon = folder ? <Folder size={grid ? 28 : 18} /> : <FileIcon size={grid ? 28 : 18} />;
   return <li className={grid ? 'file-tile' : 'file-row'}>
     <div className="entry-name">
       <span className={folder ? 'entry-icon folder' : 'entry-icon'}>{icon}</span>
       {trash ? <span className="file-name">{entry.name}</span> : folder ?
-        <button className="text-button file-name" title={entry.name} onClick={open}>{entry.name}</button> :
+        <button className="text-button file-name" title={entry.name} onClick={open}>{entry.name}</button> : entry.preview ?
+        <button className="text-button file-name" title={entry.name} onClick={onPreview}>{entry.name}</button> :
         <a className="file-name" title={entry.name} href={download}>{entry.name}</a>}
     </div>
     <span className="entry-priority">{entry.deletionPending ? <span className="priority degraded">Deletion pending</span> :
       entry.importance && <span className={entry.protection === 'degraded' ? 'priority degraded' : 'priority'}
-      title={entry.protection === 'degraded' ? 'Only one verified copy' : undefined}>{labels[entry.importance]}</span>}</span>
+      title={entry.protection === 'degraded' ? 'Awaiting a verified Google Drive copy' + (replicas ? '. Verified on ' + replicas : '')
+        : replicas ? 'Verified cloud copies on ' + replicas : undefined}>{labels[entry.importance]}
+      {replicas && <>
+        <Cloud size={12} className="replica-icon" aria-hidden="true" />
+        <span className="sr-only">, verified cloud copies on {replicas}</span>
+      </>}</span>}</span>
     <span className="entry-size">{entry.size === null ? '' : formatSize(entry.size)}</span>
     <time className="entry-date" dateTime={new Date(entry.updatedAt).toISOString()}>{new Date(entry.updatedAt).toLocaleDateString()}</time>
     <div className="entry-actions">
@@ -305,6 +428,7 @@ function FileRow({ entry, grid, trash, open, onEdit, restore }: {
               {entry.deletionPending ? 'Finish permanent deletion' : 'Delete permanently'}
             </button>
           </> : <>
+            {entry.preview && <button onClick={onPreview}><Eye size={15} /> Preview</button>}
             {!folder && <a href={download}><ArrowDownToLine size={15} /> Download</a>}
             <button onClick={() => onEdit('rename')}>Rename</button><button onClick={() => onEdit('move')}>Move</button>
             {!folder && <><button onClick={() => onEdit('copy')}>Copy</button><button onClick={() => onEdit('importance')}>Change importance</button></>}
@@ -335,18 +459,23 @@ function EntryDialog({ edit, parentId, close, success }: { edit: Edit; parentId:
     new: 'New folder', rename: 'Rename item', move: 'Move item', copy: 'Copy file',
     importance: 'Change importance', trash: 'Move to recycle bin', purge: 'Delete permanently',
   };
+  const [cleanup, setCleanup] = useState<TeraboxCleanup>();
+  const [confirmed, setConfirmed] = useState(false);
   const needsName = ['new', 'rename', 'copy'].includes(action);
   const hasDestination = action === 'move' || action === 'copy';
 
   async function save(event: FormEvent) {
     event.preventDefault();
+    if (busy || (cleanup && !confirmed)) return;
     setBusy(true);
     setError('');
     const path = '/entries/' + entry?.id;
     try {
       if (action === 'new') await api('/folders', { method: 'POST', body: JSON.stringify({ name, parentId }) });
       else if (action === 'trash') await api(path, { method: 'DELETE' });
-      else if (action === 'purge') await api(path + '/permanent', { method: 'DELETE' });
+      else if (action === 'purge') await api(path + '/permanent', {
+        method: 'DELETE', body: cleanup && JSON.stringify({ teraboxConfirmation: cleanup.confirmation }),
+      });
       else if (action === 'copy') await api(path + '/copy', { method: 'POST', body: JSON.stringify({ name, parentId: destination }) });
       else {
         const changes = action === 'rename' ? { name } : action === 'move' ? { parentId: destination } : { importance };
@@ -355,7 +484,10 @@ function EntryDialog({ edit, parentId, close, success }: { edit: Edit; parentId:
       success();
       close();
     } catch (failure) {
-      setError((failure as Error).message);
+      if (failure instanceof ApiError && failure.teraboxCleanup) {
+        setCleanup(failure.teraboxCleanup);
+        setConfirmed(false);
+      } else setError((failure as Error).message);
       if (action === 'purge') success();
       setBusy(false);
     }
@@ -364,17 +496,23 @@ function EntryDialog({ edit, parentId, close, success }: { edit: Edit; parentId:
   return <Modal title={titles[action]} close={() => { if (!busy) close(); }}>
     <form onSubmit={save}>
       {action === 'trash' && <p>Move <strong>{entry?.name}</strong> to the recycle bin?</p>}
-      {action === 'purge' && <p>Permanently delete <strong>{entry?.name}</strong>
+      {action === 'purge' && !cleanup && <p>Permanently delete <strong>{entry?.name}</strong>
         {entry?.kind === 'folder' ? ' and everything inside it' : ''}? This cannot be undone.</p>}
+      {cleanup && <>
+        <p>Find these encrypted copies by filename in the TeraBox Recycle Bin and permanently delete each matching item.</p>
+        <ul className="upload-files">{cleanup.paths.map((path) => <li key={path}>{path}</li>)}</ul>
+        <label><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
+          {' '}I checked TeraBox and its Recycle Bin for these copies and removed any matches.</label>
+      </>}
       {needsName && <label className="field">Name<input value={name} maxLength={180} required autoFocus
         onChange={(event) => setName(event.target.value)} /></label>}
       {hasDestination && <FolderPicker folder={destination} change={setDestination} excluded={action === 'move' ? entry?.id : undefined} />}
       {action === 'importance' && <ImportanceField value={importance} change={setImportance} />}
       {error && <p className="error" role="alert">{error}</p>}
       <footer className="modal-actions"><button type="button" autoFocus={action === 'purge'} disabled={busy} onClick={close}>Cancel</button>
-        <button className={action === 'purge' ? 'danger' : 'primary'} disabled={busy}>
+        <button className={action === 'purge' ? 'danger' : 'primary'} disabled={busy || Boolean(cleanup && !confirmed)}>
           {busy ? (action === 'purge' ? 'Deleting…' : 'Saving…') :
-            (action === 'trash' || action === 'purge' ? titles[action] : 'Save')}
+            (cleanup ? 'Finish permanent deletion' : action === 'trash' || action === 'purge' ? titles[action] : 'Save')}
         </button></footer>
     </form>
   </Modal>;

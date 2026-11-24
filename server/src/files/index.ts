@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { DriveError } from '../errors.ts';
+import { previewKind } from './preview.ts';
 
 export const ROOT_ID = '00000000-0000-4000-8000-000000000000';
 export const IMPORTANCE = ['highly-important', 'important', 'backup'] as const;
@@ -17,14 +18,22 @@ type NodeRow = {
   objectKey: string | null;
   size: number | null;
   sha256: string | null;
+  storageFormat: 0 | 1;
   updatedAt: number;
   deletionPending?: number;
+  googleVerified: number;
+  megaVerified: number;
+  teraboxVerified: number;
+  telegramVerified: number;
 };
 
-type PublicEntry = Omit<NodeRow, 'objectKey' | 'state' | 'sha256' | 'deletionPending'> & {
+type PublicEntry = Omit<NodeRow, 'objectKey' | 'state' | 'sha256' | 'storageFormat' | 'deletionPending'
+  | 'googleVerified' | 'megaVerified' | 'teraboxVerified' | 'telegramVerified'> & {
   storage: 'local' | null;
-  protection: 'single-copy' | 'degraded' | null;
+  protection: 'single-copy' | 'degraded' | 'replicated' | null;
   deletionPending: boolean;
+  preview: ReturnType<typeof previewKind>;
+  cloudCopies: ('google-drive' | 'mega' | 'terabox' | 'telegram')[];
 };
 
 type BrowseOptions = {
@@ -37,7 +46,12 @@ type BrowseOptions = {
 };
 
 const columns = `nodes.id, nodes.parent_id AS parentId, nodes.name, nodes.kind, nodes.state,
-  nodes.importance, nodes.object_key AS objectKey, nodes.size, nodes.sha256, nodes.updated_at AS updatedAt`;
+  nodes.importance, nodes.object_key AS objectKey, nodes.size, nodes.sha256,
+  nodes.storage_format AS storageFormat, nodes.updated_at AS updatedAt,
+  EXISTS(SELECT 1 FROM google_drive_replicas WHERE node_id = nodes.id AND verified = 1) AS googleVerified,
+  EXISTS(SELECT 1 FROM mega_replicas WHERE node_id = nodes.id AND verified = 1) AS megaVerified,
+  EXISTS(SELECT 1 FROM terabox_replicas WHERE node_id = nodes.id AND verified = 1) AS teraboxVerified,
+  EXISTS(SELECT 1 FROM telegram_replicas WHERE node_id = nodes.id AND verified = 1) AS telegramVerified`;
 const subtree = `WITH RECURSIVE subtree(id) AS (
   SELECT id FROM nodes WHERE id = ?
   UNION ALL
@@ -47,8 +61,16 @@ const publicFields = (row: NodeRow): PublicEntry => ({
   id: row.id, parentId: row.parentId, name: row.name, kind: row.kind,
   importance: row.importance, size: row.size, updatedAt: row.updatedAt,
   storage: row.kind === 'file' ? 'local' : null,
-  protection: row.kind === 'folder' ? null : row.importance === 'highly-important' ? 'degraded' : 'single-copy',
+  protection: row.kind === 'folder' ? null : row.importance === 'highly-important' && !row.googleVerified ? 'degraded'
+    : row.googleVerified || row.megaVerified || row.teraboxVerified || row.telegramVerified ? 'replicated' : 'single-copy',
   deletionPending: Boolean(row.deletionPending),
+  preview: row.state === 'ready' && row.kind === 'file' ? previewKind(row.name, row.size) : null,
+  cloudCopies: [
+    ...(row.googleVerified ? ['google-drive' as const] : []),
+    ...(row.megaVerified ? ['mega' as const] : []),
+    ...(row.teraboxVerified ? ['terabox' as const] : []),
+    ...(row.telegramVerified ? ['telegram' as const] : []),
+  ],
 });
 
 export function validateName(name: string) {
@@ -173,7 +195,7 @@ export class FileIndex {
       ${subtree}
       SELECT 1 FROM nodes JOIN subtree USING(id) WHERE state = 'pending' LIMIT 1
     `).get(id);
-    if (pending) throw new DriveError(409, 'Wait for the upload in this folder to finish.');
+    if (pending) throw new DriveError(409, 'Finish or discard the upload in this folder first.');
     this.db.prepare("UPDATE nodes SET state = 'trash', updated_at = ? WHERE id = ?").run(Date.now(), id);
   }
 
@@ -218,8 +240,17 @@ export class FileIndex {
   purgeObjects(id: string) {
     return this.db.prepare(`
       ${subtree}
-      SELECT object_key AS key FROM nodes JOIN subtree USING(id) WHERE object_key IS NOT NULL
-    `).all(id) as { key: string }[];
+      SELECT nodes.id, object_key AS key FROM nodes JOIN subtree USING(id) WHERE object_key IS NOT NULL
+    `).all(id) as { id: string; key: string }[];
+  }
+
+  trashObjectKeys() {
+    const rows = this.db.prepare(`WITH RECURSIVE discarded(id) AS (
+        SELECT id FROM nodes WHERE state = 'trash'
+        UNION SELECT nodes.id FROM nodes JOIN discarded ON nodes.parent_id = discarded.id
+      )
+      SELECT object_key AS key FROM nodes JOIN discarded USING(id) WHERE object_key IS NOT NULL`).all() as { key: string }[];
+    return new Set(rows.map(({ key }) => key));
   }
 
   finishPurge(id: string) {
@@ -239,11 +270,12 @@ export class FileIndex {
     return { id, key };
   }
 
-  finish(id: string, size: number, sha256: string) {
+  finish(id: string, size: number, sha256: string, format: 0 | 1) {
     const row = this.db.prepare(`
-      UPDATE nodes SET size = ?, sha256 = ?, updated_at = ?, state = 'ready' WHERE id = ? AND state = 'pending'
+      UPDATE nodes SET size = ?, sha256 = ?, storage_format = ?, updated_at = ?, state = 'ready'
+      WHERE id = ? AND state = 'pending'
       RETURNING ${columns}
-    `).get(size, sha256, Date.now(), id) as NodeRow | undefined;
+    `).get(size, sha256, format, Date.now(), id) as NodeRow | undefined;
     if (!row) throw new Error('Upload reservation could not be finalized.');
     return publicFields(row);
   }

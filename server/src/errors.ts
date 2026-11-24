@@ -6,3 +6,14 @@ export class DriveError extends Error {
     this.status = status;
   }
 }
+
+export class TeraboxCleanupRequired extends DriveError {
+  readonly paths: string[];
+  readonly confirmation: string;
+
+  constructor(paths: string[], confirmation: string) {
+    super(409, 'Clear these copies from the TeraBox Recycle Bin before finishing deletion.');
+    this.paths = paths;
+    this.confirmation = confirmation;
+  }
+}
