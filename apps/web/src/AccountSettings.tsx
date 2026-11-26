@@ -13,7 +13,6 @@ type Step = { kind: 'google'; url: string } | { kind: 'qr' } | { kind: 'input'; 
   | { kind: 'teraboxWeb'; id: string; url: string };
 type Connections = {
   providers: Record<Provider, CloudStatus>;
-  googleRedirectUri: string;
   googleReady: boolean;
   teraboxReady: boolean;
   telegramBotUsername?: string;
@@ -48,17 +47,7 @@ function field(label: string, name: string, type = 'text', maxLength = 1024) {
   return <label className="field">{label}<input required name={name} type={type} maxLength={maxLength} autoComplete="off" /></label>;
 }
 
-function ProviderFields({ provider, redirect }: { provider: Provider; redirect: string }) {
-  if (provider === 'googleDrive') return <>
-    <label className="field">OAuth client type<select name="clientType">
-      <option value="web">Web application</option>
-      {redirect.startsWith('http://') && <option value="installed">Desktop app on this computer</option>}
-    </select></label>
-    <p className="muted">For a Web application client, register this redirect URI in Google Cloud.</p>
-    <code className="redirect-uri">{redirect}</code>
-    {field('Client ID', 'clientId', 'text', 256)}
-    {field('Client secret', 'clientSecret', 'password')}
-  </>;
+function ProviderFields({ provider }: { provider: Exclude<Provider, 'googleDrive'> }) {
   if (provider === 'mega') return <>
     {field('Email', 'email', 'email', 254)}
     {field('MEGA password', 'password', 'password')}
@@ -186,8 +175,8 @@ export function AccountConnections({ onLogout }: { onLogout: () => void }) {
   const flow = state?.flow;
   const step = flow?.step;
   const connectLabel = (state?.providers[provider] === 'off' ? 'Connect ' : 'Reconnect ') + providers[provider];
-  const setupForm = state && <form key={provider} className="settings-form" onSubmit={startForm}>
-    <ProviderFields provider={provider} redirect={state.googleRedirectUri} />
+  const setupForm = provider !== 'googleDrive' && <form key={provider} className="settings-form" onSubmit={startForm}>
+    <ProviderFields provider={provider} />
     {provider === 'terabox' && teraMethod && <input type="hidden" name="method" value={teraMethod} />}
     <button className="primary" disabled={busy}>{busy ? 'Starting connection' : connectLabel}</button>
   </form>;
@@ -213,21 +202,18 @@ export function AccountConnections({ onLogout }: { onLogout: () => void }) {
         <button type="button" onClick={() => void cancel()}>Cancel connection</button>
       </section> : <section className="settings-panel">
         {flow?.status === 'failed' && <p className="error" role="alert">{flow.error}</p>}
-        {flow?.status === 'connected' && <p role="status">{providers[flow.provider]} connected.</p>}
+        {flow?.status === 'connected' && flow.provider !== 'googleDrive' && <p role="status">{providers[flow.provider]} connected.</p>}
         <h2>{providers[provider]}</h2>
         {(provider === 'telegram' || provider === 'telegramBot') && <a href="/connections/telegram-help">Telegram setup instructions</a>}
         {provider === 'telegramBot' && state.telegramBotUsername && <a href={'https://t.me/' + state.telegramBotUsername}
           target="_blank" rel="noopener noreferrer">Open @{state.telegramBotUsername} in Telegram</a>}
-        {provider === 'googleDrive' ? <>
-          {state.googleReady ? <button type="button" className="primary" disabled={busy}
-            onClick={() => void start({})}>{busy ? 'Opening Google' : connectLabel}</button>
-            : <p className="muted">Set up the Google OAuth client once to enable sign-in.</p>}
-          <details><summary>Google OAuth setup</summary>
-            <p className="muted">Enable the Drive API and create an OAuth client in
-              {' '}<a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener noreferrer">Google Cloud</a>.</p>
-            {setupForm}
-          </details>
-        </> : provider === 'terabox' ? <>
+        {provider === 'googleDrive' ? (
+          state.providers.googleDrive === 'connected' ? <p role="status">Connected</p>
+            : state.googleReady ? <button type="button" className="primary" disabled={busy}
+              onClick={() => void start({})}>{busy ? 'Opening Google…'
+                : state.providers.googleDrive === 'off' ? 'Connect Google Drive' : 'Reconnect Google Drive'}</button>
+              : <p className="muted">Google Drive sign-in is unavailable until the site administrator enables it.</p>
+        ) : provider === 'terabox' ? <>
           {!teraOptions ? <button type="button" className="primary" onClick={() => setTeraOptions(true)}>{connectLabel}</button>
             : <><div className="connection-methods" aria-label="TeraBox sign-in methods">
               <button type="button" disabled={busy} aria-pressed={teraMethod === 'web'} onClick={() => chooseTeraMethod('web')}>Sign in on TeraBox</button>

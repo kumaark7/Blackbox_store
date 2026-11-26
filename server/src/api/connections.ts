@@ -20,8 +20,7 @@ import { TeraboxStorage } from '../storage/terabox.ts';
 
 const secret = z.string().min(1).max(1024);
 export const connectionInput = z.discriminatedUnion('provider', [
-  z.strictObject({ provider: z.literal('googleDrive'), clientId: z.string().max(256).regex(/^[\w-]+\.apps\.googleusercontent\.com$/).optional(),
-    clientSecret: secret.optional(), clientType: z.enum(['web', 'installed']).optional() }),
+  z.strictObject({ provider: z.literal('googleDrive') }),
   z.strictObject({ provider: z.literal('mega'), email: z.email().max(254),
     password: secret.refine((value) => !/[\r\n]/.test(value) && Buffer.byteLength(value) <= 1024),
     folder: z.string().max(180).regex(/^[\w-]+(?:\/[\w-]+)*$/).optional() }),
@@ -87,7 +86,6 @@ export class Connections {
       providers: { googleDrive: this.drive.googleDrive.status(), mega: this.drive.mega.status(),
         terabox: this.drive.terabox.status(), telegram: this.drive.telegram.status(), telegramBot: this.uploadBot.status() },
       telegramBotUsername: this.uploadBot.username,
-      googleRedirectUri: this.config.origin + googleCallback,
       googleReady: Boolean(this.googleClient && !(this.googleClient.clientType === 'installed' && this.config.secureCookies)),
       teraboxReady: Boolean(this.teraApp),
       flow: job?.owner === owner ? { provider: job.provider, status: job.status, error: job.error, step: job.step } : null,
@@ -96,9 +94,6 @@ export class Connections {
 
   async start(owner: string, input: Input) {
     if (this.closed || this.running) throw new DriveError(409, 'An account connection is already in progress.');
-    if (input.provider === 'googleDrive' && input.clientType === 'installed' && this.config.secureCookies) {
-      throw new DriveError(400, 'Use a Google Web application OAuth client for this HTTPS site.');
-    }
     const controller = new AbortController();
     const job: Job = { owner, provider: input.provider, controller, status: 'pending',
       signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5 * 60_000)]) };
@@ -183,12 +178,8 @@ export class Connections {
     this.check(job);
     switch (input.provider) {
       case 'googleDrive': {
-        const supplied = input.clientId || input.clientSecret || input.clientType;
-        const credentialsInput = supplied
-          ? input.clientId && input.clientSecret && input.clientType && { clientId: input.clientId, clientSecret: input.clientSecret, clientType: input.clientType }
-          : this.googleClient;
-        if (!credentialsInput) throw new DriveError(400, 'Configure a Google OAuth application in setup before connecting.');
-        const { clientId, clientSecret, clientType } = credentialsInput;
+        if (!this.googleClient) throw new DriveError(503, 'Google Drive sign-in is unavailable until the site administrator enables it.');
+        const { clientId, clientSecret, clientType } = this.googleClient;
         if (clientType === 'installed' && this.config.secureCookies) {
           throw new DriveError(400, 'Use a Google Web application OAuth client for this HTTPS site.');
         }

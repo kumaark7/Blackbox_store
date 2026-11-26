@@ -196,6 +196,9 @@ test('Google connects from the site with a session-bound OAuth flow and activate
   const payload = { provider: 'googleDrive' };
   assert.equal((await app.inject(url)).statusCode, 401);
   assert.equal((await app.inject({ method: 'POST', url, headers: { cookie: headers.cookie }, payload })).statusCode, 403);
+  const override = await app.inject({ method: 'POST', url, headers,
+    payload: { ...payload, clientId: 'other.apps.googleusercontent.com', clientSecret: 'other-secret' } });
+  assert.equal(override.statusCode, 400);
   const start = await app.inject({ method: 'POST', url, headers, payload });
   assert.equal(start.statusCode, 202, start.body);
   type ConnectionStatus = ReturnType<Connections['status']>;
@@ -215,6 +218,7 @@ test('Google connects from the site with a session-bound OAuth flow and activate
   assert.ok(consent.flow?.step?.kind === 'google');
   const authorization = new URL(consent.flow.step.url);
   assert.equal(authorization.origin, 'https://accounts.google.com');
+  assert.equal(authorization.searchParams.get('client_id'), clientId);
   assert.equal(authorization.searchParams.get('redirect_uri'), origin + callback);
   const state = authorization.searchParams.get('state');
   const otherFlow = (await app.inject({ url, headers: { cookie: other.name + '=' + other.value } })).json();

@@ -32,7 +32,7 @@ The worker copies encrypted files only. If you have plaintext files from Milesto
 
 ## Browser authorization
 
-For a one-click button from first use, set `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` and `GOOGLE_OAUTH_CLIENT_TYPE` on the server. Register `APP_ORIGIN` followed by `/api/connections/google/callback` for a Web application client. Restart after editing the server environment. If the encrypted connection already contains the original client, Blackbox reuses it for reconnecting.
+For a hosted HTTPS instance, create a **Web application** OAuth client in Google Cloud. Register `APP_ORIGIN` followed by `/api/connections/google/callback` as its authorized redirect URI. In the server's `.env`, set `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `GOOGLE_OAUTH_CLIENT_TYPE=web`. Restart Blackbox after editing the server environment.
 
-In Blackbox Store, open **Account connections → Google Drive**. For a hosted HTTPS instance, create a **Web application** OAuth client in Google Cloud and register the exact redirect URI displayed in Blackbox Store. Paste the client's ID and secret, then choose **Connect Google Drive** and **Continue with Google**. Return to Blackbox Store after approving access. On a loopback HTTP instance, you can also select **Desktop app on this computer**. An existing replica binding requires its original Google account and OAuth client.
+In **Account connections**, select **Google Drive**, then click **Connect Google Drive**. Sign in and approve access on Google's page. Google returns you to Blackbox, where Google Drive shows **Connected**. An existing replica binding requires the original Google account and OAuth client, which Blackbox reuses for reconnection when saved.
 
