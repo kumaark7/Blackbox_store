@@ -61,6 +61,31 @@ export class CloudReplicas {
     return this.db.prepare(`SELECT 1 FROM ${this.table} WHERE failures > 0 LIMIT 1`).get() ? 'retrying' : 'connected';
   }
 
+  available() {
+    return Boolean(this.provider && !this.connecting && !this.shutdown.signal.aborted);
+  }
+
+  async storePending(id: string, object: StoredObject, requestSignal?: AbortSignal) {
+    const provider = this.provider;
+    if (!provider || !this.available()) throw new DriveError(409, 'Connect ' + this.settings.name + ' in Account connections first.');
+    this.ensureNotBusy([id]);
+    const signal = requestSignal ? AbortSignal.any([this.shutdown.signal, requestSignal]) : this.shutdown.signal;
+    this.db.prepare(`INSERT OR IGNORE INTO ${this.table} (node_id) VALUES (?)`).run(id);
+    const job = { ...object, ...this.getReplica(id)!, id };
+    this.busy.add(id);
+    try {
+      await this.copyToCloud(provider, job, signal);
+      this.db.prepare(`UPDATE ${this.table} SET verified = 1, failures = 0, confirmed_at = ?, retry_at = ? WHERE node_id = ?`)
+        .run(Date.now(), Number.MAX_SAFE_INTEGER, id);
+      this.quotaCache = undefined;
+    } catch (error) {
+      if (signal.aborted || error instanceof DriveError) throw error;
+      throw new DriveError(503, 'Could not save the file to ' + this.settings.name + '. Check the account connection and available storage.');
+    } finally {
+      this.busy.delete(id);
+    }
+  }
+
   trackedUsage() {
     const rows = this.db.prepare(`SELECT size FROM ${this.table} JOIN nodes ON nodes.id = node_id
       WHERE verified = 1 AND nodes.storage_format = 1`).iterate() as Iterable<{ size: number }>;
@@ -137,7 +162,7 @@ export class CloudReplicas {
     const job = this.db.prepare(`${purgeTree}
       SELECT nodes.id, object_key AS key, size, sha256, storage_format AS format, ${replicaColumns}
       FROM nodes LEFT JOIN ${this.table} ON node_id = nodes.id
-      WHERE storage_format = 1 AND state != 'pending'
+      WHERE storage_format = 1 AND state != 'pending' AND cloud_only = 0
         AND (importance = ? OR remote_id IS NOT NULL)
         AND (retry_at IS NULL OR retry_at <= ?)
         AND nodes.id NOT IN (SELECT id FROM deleting)
@@ -195,20 +220,24 @@ export class CloudReplicas {
     if (ids.some((id) => this.busy.has(id))) throw new DriveError(409, 'Wait for the ' + this.settings.name + ' operation to finish, then try again.');
   }
 
-  async delete(id: string) {
+  async delete(id: string, signal = this.shutdown.signal) {
     const replica = this.getReplica(id);
     if (!replica?.remoteId) return;
     if (!this.provider) throw new DriveError(503, 'Reconnect the original ' + this.settings.name + ' before finishing permanent deletion.');
-    return this.provider.delete(replica.remoteId, this.shutdown.signal);
+    return this.provider.delete(replica.remoteId, signal);
   }
 
-  async download(id: string, object: StoredObject) {
+  async download(id: string, object: StoredObject, cloudOnly = false) {
     const replica = this.getReplica(id);
     const provider = this.provider;
     if (!provider || !replica?.remoteId || !replica.confirmedAt) return null;
     const remoteId = replica.remoteId;
     const signal = this.shutdown.signal;
     try {
+      if (cloudOnly) {
+        const source = await provider.download(remoteId, signal, encryptedSize(object.size));
+        return this.local.decodeCloudObject(object, source);
+      }
       const valid = await this.local.verify(object, signal).catch((error) => {
         if (missingFile(error)) return false;
         throw error;

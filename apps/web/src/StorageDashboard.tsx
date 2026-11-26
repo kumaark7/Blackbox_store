@@ -79,7 +79,8 @@ function StorageDashboard({ usage }: { usage: StorageUsage }) {
     <DashboardChart cloud={usage.cloud} />
     <section className="dashboard-accounts" aria-label="Cloud accounts">
       <h3>Cloud accounts</h3>
-      {usage.cloud.accounts.length === 0 ? <p className="muted">No cloud accounts connected.</p> :
+      {usage.cloud.accounts.length === 0 ? <p className="muted">No cloud accounts connected.{' '}
+        <a href="/connections">Connect a cloud account</a></p> :
         <ul>{usage.cloud.accounts.map(({ id, status, tracked, quota }) => <li key={id}>
           <div><strong>{cloudNames[id]}</strong><small>
             {number.format(tracked.files)} {tracked.files === 1 ? 'copy' : 'copies'} · {formatSize(tracked.bytes)} tracked
@@ -91,7 +92,7 @@ function StorageDashboard({ usage }: { usage: StorageUsage }) {
           </div>
         </li>)}</ul>}
     </section>
-    <section className="dashboard-local" aria-label="Local storage">
+    {!usage.cloudOnly && <section className="dashboard-local" aria-label="Local storage">
       <h3>Local storage</h3>
       <dl className="storage-usage">
         <div><dt>Blackbox Store data</dt><dd>{formatSize(usage.appBytes)}</dd></div>
@@ -100,7 +101,7 @@ function StorageDashboard({ usage }: { usage: StorageUsage }) {
           {formatSize(usage.disk.availableBytes)} <small>of {formatSize(usage.disk.totalBytes)}</small>
         </> : 'Unavailable'}</dd></div>
       </dl>
-    </section>
+    </section>}
   </div>;
 }
 

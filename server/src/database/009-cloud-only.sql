@@ -1,0 +1,1 @@
+ALTER TABLE nodes ADD COLUMN cloud_only INTEGER NOT NULL DEFAULT 0 CHECK (cloud_only IN (0, 1));

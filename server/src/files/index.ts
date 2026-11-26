@@ -19,6 +19,7 @@ type NodeRow = {
   size: number | null;
   sha256: string | null;
   storageFormat: 0 | 1;
+  cloudOnly: number;
   updatedAt: number;
   deletionPending?: number;
   googleVerified: number;
@@ -27,9 +28,9 @@ type NodeRow = {
   telegramVerified: number;
 };
 
-type PublicEntry = Omit<NodeRow, 'objectKey' | 'state' | 'sha256' | 'storageFormat' | 'deletionPending'
+type PublicEntry = Omit<NodeRow, 'objectKey' | 'state' | 'sha256' | 'storageFormat' | 'cloudOnly' | 'deletionPending'
   | 'googleVerified' | 'megaVerified' | 'teraboxVerified' | 'telegramVerified'> & {
-  storage: 'local' | null;
+  storage: 'cloud' | 'local' | null;
   protection: 'single-copy' | 'degraded' | 'replicated' | null;
   deletionPending: boolean;
   preview: ReturnType<typeof previewKind>;
@@ -47,7 +48,7 @@ type BrowseOptions = {
 
 const columns = `nodes.id, nodes.parent_id AS parentId, nodes.name, nodes.kind, nodes.state,
   nodes.importance, nodes.object_key AS objectKey, nodes.size, nodes.sha256,
-  nodes.storage_format AS storageFormat, nodes.updated_at AS updatedAt,
+  nodes.storage_format AS storageFormat, nodes.cloud_only AS cloudOnly, nodes.updated_at AS updatedAt,
   EXISTS(SELECT 1 FROM google_drive_replicas WHERE node_id = nodes.id AND verified = 1) AS googleVerified,
   EXISTS(SELECT 1 FROM mega_replicas WHERE node_id = nodes.id AND verified = 1) AS megaVerified,
   EXISTS(SELECT 1 FROM terabox_replicas WHERE node_id = nodes.id AND verified = 1) AS teraboxVerified,
@@ -60,7 +61,7 @@ const subtree = `WITH RECURSIVE subtree(id) AS (
 const publicFields = (row: NodeRow): PublicEntry => ({
   id: row.id, parentId: row.parentId, name: row.name, kind: row.kind,
   importance: row.importance, size: row.size, updatedAt: row.updatedAt,
-  storage: row.kind === 'file' ? 'local' : null,
+  storage: row.kind === 'file' ? (row.cloudOnly ? 'cloud' : 'local') : null,
   protection: row.kind === 'folder' ? null : row.importance === 'highly-important' && !row.googleVerified ? 'degraded'
     : row.googleVerified || row.megaVerified || row.teraboxVerified || row.telegramVerified ? 'replicated' : 'single-copy',
   deletionPending: Boolean(row.deletionPending),
@@ -182,6 +183,9 @@ export class FileIndex {
       throw new DriveError(400, 'A folder cannot be moved inside itself.');
     }
     if (edits.importance && row.kind !== 'file') throw new DriveError(400, 'Choose a file to change importance.');
+    if (row.cloudOnly && edits.importance && edits.importance !== row.importance) {
+      throw new DriveError(409, 'Upload the file again with the new priority to store it with a different cloud provider.');
+    }
     this.writeName(() => this.db.prepare(`
       UPDATE nodes SET name = ?, parent_id = ?, importance = ?, updated_at = ? WHERE id = ?
     `).run(name, parentId, edits.importance ?? row.importance, Date.now(), id));
@@ -257,16 +261,16 @@ export class FileIndex {
     this.db.prepare(`${subtree} DELETE FROM nodes WHERE id IN (SELECT id FROM subtree)`).run(id);
   }
 
-  reserve(parentId: string, rawName: string, importance: Importance) {
+  reserve(parentId: string, rawName: string, importance: Importance, cloudOnly = false) {
     this.folder(parentId);
     const name = validateName(rawName);
     const id = randomUUID();
     const key = randomUUID();
     const now = Date.now();
     this.writeName(() => this.db.prepare(`
-      INSERT INTO nodes (id, parent_id, name, kind, state, importance, object_key, created_at, updated_at)
-      VALUES (?, ?, ?, 'file', 'pending', ?, ?, ?, ?)
-    `).run(id, parentId, name, importance, key, now, now));
+      INSERT INTO nodes (id, parent_id, name, kind, state, importance, object_key, created_at, updated_at, cloud_only)
+      VALUES (?, ?, ?, 'file', 'pending', ?, ?, ?, ?, ?)
+    `).run(id, parentId, name, importance, key, now, now, Number(cloudOnly)));
     return { id, key };
   }
 

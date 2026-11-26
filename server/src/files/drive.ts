@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, opendir } from 'node:fs/promises';
 import type { DatabaseSync } from 'node:sqlite';
 import { addAbortSignal } from 'node:stream';
 import type { Readable } from 'node:stream';
@@ -24,9 +24,10 @@ import type { Importance } from './index.ts';
 
 type UploadOptions = { parentId: string; name: string; importance: Importance; signal?: AbortSignal };
 type TransferOptions = Omit<UploadOptions, 'signal'> & { size: number; fingerprint: string };
-type Transfer = TransferOptions & { id: string; key: string; received: number; state: 'pending' | 'ready' | 'trash' };
+type Transfer = TransferOptions & { id: string; key: string; received: number; cloudOnly: number; state: 'pending' | 'ready' | 'trash' };
 const transfers = `SELECT nodes.id, parent_id AS parentId, name, importance, state, object_key AS key,
-  total_bytes AS size, received_bytes AS received, fingerprint FROM transfers JOIN nodes ON nodes.id = node_id`;
+  total_bytes AS size, received_bytes AS received, cloud_only AS cloudOnly, fingerprint FROM transfers JOIN nodes ON nodes.id = node_id`;
+const transferCacheMs = 24 * 60 * 60_000;
 
 function transferStatus({ id, parentId, name, importance, size, received, state }: Transfer) {
   return { id, parentId, name, importance, size, received, completed: state === 'ready' };
@@ -41,12 +42,13 @@ export class Drive {
   readonly mega: CloudReplicas;
   readonly terabox: CloudReplicas;
   readonly telegram: CloudReplicas;
+  readonly cloudOnly: boolean;
   private activeUploads = 0;
   private activePurges = new Set<string>();
   private activeTransfers = new Set<string>();
 
   constructor(index: FileIndex, storage: LocalStorage, maxConcurrentUploads: number, lock: DatabaseSync,
-    googleDrive: CloudReplicas, mega: CloudReplicas, terabox: CloudReplicas, telegram: CloudReplicas) {
+    googleDrive: CloudReplicas, mega: CloudReplicas, terabox: CloudReplicas, telegram: CloudReplicas, cloudOnly: boolean) {
     this.index = index;
     this.storage = storage;
     this.maxConcurrentUploads = maxConcurrentUploads;
@@ -55,11 +57,12 @@ export class Drive {
     this.mega = mega;
     this.terabox = terabox;
     this.telegram = telegram;
+    this.cloudOnly = cloudOnly;
   }
 
   static async open(dataDir: string, maxUploadBytes: number, maxConcurrentUploads: number,
     options: { googleProvider?: GoogleDriveStorage; mega?: MegaConfig; megaProvider?: CloudProvider;
-      megaExecutable?: string; telegramClientDir?: string; telegramProvider?: CloudProvider } = {}) {
+      megaExecutable?: string; telegramClientDir?: string; telegramProvider?: CloudProvider; cloudOnly?: boolean } = {}) {
     const lock = lockDrive(dataDir);
     let db: DatabaseSync | undefined;
     try {
@@ -80,20 +83,26 @@ export class Drive {
       } catch {
         provider = null;
       }
-      const interrupted = db.prepare(`SELECT id, object_key AS key FROM nodes
-        WHERE state = 'pending' AND id NOT IN (SELECT node_id FROM transfers)`).all() as { id: string; key: string }[];
-      for (const pending of interrupted) {
-        await storage.delete(pending.key);
-        index.abandon(pending.id);
+      const discardStage = db.prepare(`SELECT 1 FROM nodes WHERE object_key = ? AND
+        ((cloud_only = 1 AND state != 'pending') OR (state = 'pending' AND id NOT IN (SELECT node_id FROM transfers)))`);
+      for await (const entry of await opendir(objects)) {
+        const key = /^([a-f0-9-]{36})(?:\.part)?$/.exec(entry.name)?.[1];
+        if (key && entry.isFile() && discardStage.get(key)) await storage.delete(key);
       }
+      db.prepare(`DELETE FROM nodes WHERE state = 'pending' AND cloud_only = 0 AND id NOT IN (SELECT node_id FROM transfers)`).run();
       const terabox = await readTeraboxAuth(db, dataDir, master)
         .then((auth) => auth ? new TeraboxStorage(auth) : null).catch(() => null);
       const telegram = options.telegramProvider ?? await openTelegram(db, dataDir, master, options.telegramClientDir).catch(() => null);
       const savedMega = await readMegaCredentials(dataDir, master).catch(() => null);
       const mega = savedMega ? managedMega(savedMega, options.megaExecutable ?? options.mega?.executable ?? 'rclone') : options.mega;
-      return new Drive(index, storage, maxConcurrentUploads, lock, new CloudReplicas(db, storage, 'google_drive', provider),
+      const drive = new Drive(index, storage, maxConcurrentUploads, lock, new CloudReplicas(db, storage, 'google_drive', provider),
         new CloudReplicas(db, storage, 'mega', options.megaProvider ?? openMega(db, mega)),
-        new CloudReplicas(db, storage, 'terabox', terabox), new CloudReplicas(db, storage, 'telegram', telegram));
+        new CloudReplicas(db, storage, 'terabox', terabox), new CloudReplicas(db, storage, 'telegram', telegram), Boolean(options.cloudOnly));
+      if (drive.cloudOnly) db.exec(`UPDATE nodes SET cloud_only = 1 WHERE state = 'pending'
+        AND id IN (SELECT node_id FROM transfers)`);
+      await drive.expireCloudTransfers();
+      await drive.clearAbandonedCloudUploads();
+      return drive;
     } catch (error) {
       db?.close();
       lock.close();
@@ -114,10 +123,65 @@ export class Drive {
     return replica.replaceConnection(install);
   }
 
+  private cloudDestination(importance: Importance) {
+    const candidates = importance === 'highly-important' ? [this.googleDrive] : importance === 'important'
+      ? [this.mega] : [this.terabox, this.telegram];
+    const destination = candidates.find((candidate) => candidate.available());
+    if (destination) return destination;
+    const name = importance === 'highly-important' ? 'Google Drive' : importance === 'important' ? 'MEGA' : 'TeraBox or Telegram Backup Channel';
+    throw new DriveError(409, 'Connect ' + name + ' in Account connections before uploading files with this priority.');
+  }
+
+  private async deleteCloudCopies(id: string) {
+    for (const replica of [this.googleDrive, this.mega, this.terabox, this.telegram]) {
+      replica.ensureNotBusy([id]);
+      await replica.delete(id, AbortSignal.timeout(15_000));
+    }
+  }
+
+  private async clearAbandonedCloudUploads() {
+    const rows = this.index.db.prepare(`SELECT id FROM nodes WHERE state = 'pending' AND cloud_only = 1
+      AND id NOT IN (SELECT node_id FROM transfers)`).all() as { id: string }[];
+    for (const { id } of rows) {
+      try {
+        await this.deleteCloudCopies(id);
+        this.index.abandon(id);
+      } catch {
+        // Keep the provider references so cleanup can be retried after reconnecting.
+      }
+    }
+  }
+
+  async expireCloudTransfers(now = Date.now()) {
+    const db = this.index.db;
+    const candidates = db.prepare(`${transfers} WHERE state = 'pending' AND cloud_only = 1 AND updated_at <= ?`)
+      .all(now - transferCacheMs) as Transfer[];
+    for (const { id, key } of candidates) {
+      if (this.activeTransfers.has(id)) continue;
+      const pending = db.prepare("SELECT 1 FROM nodes WHERE id = ? AND state = 'pending' AND updated_at <= ?")
+        .get(id, now - transferCacheMs);
+      if (!pending) continue;
+      this.activeTransfers.add(id);
+      try {
+        await this.storage.delete(key);
+        db.prepare('UPDATE transfers SET received_bytes = 0 WHERE node_id = ?').run(id);
+        try {
+          await this.deleteCloudCopies(id);
+          this.index.abandon(id);
+        } catch {
+          // Keep the pending record so the remote object can still be cleaned up.
+        }
+      } finally {
+        this.activeTransfers.delete(id);
+      }
+    }
+  }
+
   async upload(options: UploadOptions, getSource: () => Readable | Promise<Readable>) {
     this.checkUploadSlot();
     options.signal?.throwIfAborted();
-    const { key, id } = this.index.reserve(options.parentId, options.name, options.importance);
+    const destination = this.cloudOnly ? this.cloudDestination(options.importance) : undefined;
+    const { key, id } = this.index.reserve(options.parentId, options.name, options.importance, this.cloudOnly);
     this.activeUploads++;
     let committed = false;
     try {
@@ -127,14 +191,17 @@ export class Drive {
         throw new DriveError(502, 'The stored upload could not be verified.');
       }
       options.signal?.throwIfAborted();
+      if (destination) await destination.storePending(id, object, options.signal);
       const entry = this.index.finish(id, object.size, object.sha256, object.format);
       committed = true;
       return entry;
     } finally {
       try {
+        if (!committed || destination) await this.storage.delete(key);
         if (!committed) {
-          await this.storage.delete(key);
-          this.index.abandon(id);
+          // Preserve remote identifiers when cleanup has to be retried on restart.
+          const removed = !destination || await this.deleteCloudCopies(id).then(() => true, () => false);
+          if (removed) this.index.abandon(id);
         }
       } finally {
         this.activeUploads--;
@@ -154,6 +221,7 @@ export class Drive {
   }
 
   startTransfer(options: TransferOptions) {
+    if (this.cloudOnly) this.cloudDestination(options.importance);
     this.storage.checkSize(options.size);
     const name = validateName(options.name);
     const db = this.index.db;
@@ -164,13 +232,20 @@ export class Drive {
         && existing.fingerprint === options.fingerprint) return transferStatus(existing);
       throw new DriveError(409, 'A different upload has this name. Discard the pending upload or choose the original file and importance.');
     }
+    if (this.cloudOnly) {
+      const pending = db.prepare(`SELECT COUNT(*) AS count FROM transfers JOIN nodes ON nodes.id = node_id
+        WHERE state = 'pending' AND cloud_only = 1 AND updated_at > ?`).get(Date.now() - transferCacheMs)?.count;
+      if (Number(pending) >= this.maxConcurrentUploads) {
+        throw new DriveError(429, 'Resume or discard a pending upload before starting another.');
+      }
+    }
     db.exec('BEGIN IMMEDIATE');
     try {
-      const reserved = this.index.reserve(options.parentId, name, options.importance);
+      const reserved = this.index.reserve(options.parentId, name, options.importance, this.cloudOnly);
       db.prepare('INSERT INTO transfers (node_id, total_bytes, fingerprint) VALUES (?, ?, ?)')
         .run(reserved.id, options.size, options.fingerprint);
       db.exec('COMMIT');
-      return transferStatus({ ...options, ...reserved, name, received: 0, state: 'pending' });
+      return transferStatus({ ...options, ...reserved, name, received: 0, cloudOnly: Number(this.cloudOnly), state: 'pending' });
     } catch (error) {
       db.exec('ROLLBACK');
       throw error;
@@ -210,6 +285,7 @@ export class Drive {
       if (transfer.state !== 'pending' || offset !== transfer.received || offset >= transfer.size) {
         throw new DriveError(409, 'The upload offset has changed. Check the saved progress and retry.');
       }
+      if (this.cloudOnly || transfer.cloudOnly) this.cloudDestination(transfer.importance);
       const length = Math.min(CHUNK_BYTES, transfer.size - offset);
       const bytes = Buffer.allocUnsafe(length);
       let received = 0;
@@ -224,6 +300,7 @@ export class Drive {
       if (received !== length) throw new DriveError(400, 'The upload chunk is incomplete.');
       await this.storage.append(transfer.key, offset, bytes);
       this.index.db.prepare('UPDATE transfers SET received_bytes = ? WHERE node_id = ?').run(offset + length, id);
+      this.index.db.prepare('UPDATE nodes SET updated_at = ? WHERE id = ?').run(Date.now(), id);
       return transferStatus({ ...transfer, received: offset + length });
     });
   }
@@ -232,9 +309,16 @@ export class Drive {
     return this.transferOperation(id, async (transfer) => {
       if (transfer.state === 'ready') return transferStatus(transfer);
       if (transfer.received !== transfer.size) throw new DriveError(409, 'The upload still has missing chunks.');
+      const destination = this.cloudOnly || transfer.cloudOnly ? this.cloudDestination(transfer.importance) : undefined;
       signal?.throwIfAborted();
       const object = await this.storage.complete(transfer.key, transfer.size, transfer.fingerprint, signal);
+      if (destination) {
+        this.index.db.prepare('UPDATE nodes SET cloud_only = 1 WHERE id = ?').run(id);
+        this.index.db.prepare('UPDATE nodes SET updated_at = ? WHERE id = ?').run(Date.now(), id);
+        await destination.storePending(id, object, signal);
+      }
       this.index.finish(id, object.size, object.sha256, object.format);
+      if (destination) await this.storage.delete(transfer.key);
       return transferStatus({ ...transfer, state: 'ready' });
     });
   }
@@ -243,6 +327,10 @@ export class Drive {
     return this.transferOperation(id, async (transfer) => {
       if (transfer.state !== 'pending') throw new DriveError(409, 'This upload is already complete.');
       await this.storage.delete(transfer.key);
+      if (transfer.cloudOnly) {
+        this.index.db.prepare('UPDATE transfers SET received_bytes = 0 WHERE node_id = ?').run(id);
+        await this.deleteCloudCopies(id);
+      }
       this.index.abandon(id);
     });
   }
@@ -255,7 +343,7 @@ export class Drive {
     try {
       const stream = await this.openStoredFile(id, {
         key: entry.objectKey, size: entry.size, sha256: entry.sha256, format: entry.storageFormat,
-      });
+      }, Boolean(entry.cloudOnly));
       return { name: entry.name, size: entry.size, stream };
     } catch (error) {
       if (missingFile(error)) {
@@ -265,17 +353,18 @@ export class Drive {
     }
   }
 
-  private async openStoredFile(id: string, object: StoredObject) {
+  private async openStoredFile(id: string, object: StoredObject, cloudOnly: boolean) {
     let failure: unknown;
     for (const replica of [this.googleDrive, this.mega, this.terabox, this.telegram]) {
       try {
-        const stream = await replica.download(id, object);
+        const stream = await replica.download(id, object, cloudOnly);
         if (stream) return stream;
       } catch (error) {
         failure ??= error;
       }
     }
     if (failure) throw failure;
+    if (cloudOnly) throw new DriveError(503, 'Reconnect the original cloud account to open this file.');
     return this.storage.download(object);
   }
 

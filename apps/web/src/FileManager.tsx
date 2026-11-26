@@ -96,8 +96,8 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [savedTransfers, setSavedTransfers] = useState<SavedTransfer[]>([]);
   const [maxUploadBytes, setMaxUploadBytes] = useState<number>();
-  const [cloud, setCloud] = useState<{ googleDrive: CloudStatus; mega: CloudStatus; terabox: CloudStatus; telegram: CloudStatus }>(
-    { googleDrive: 'off', mega: 'off', terabox: 'off', telegram: 'off' });
+  const [cloud, setCloud] = useState<{ googleDrive: CloudStatus; mega: CloudStatus; terabox: CloudStatus; telegram: CloudStatus; cloudOnly: boolean }>(
+    { googleDrive: 'off', mega: 'off', terabox: 'off', telegram: 'off', cloudOnly: false });
   const [active, setActive] = useState(false);
   const activeUpload = useRef<AbortController | null>(null);
   const stopQueue = useRef(false);
@@ -110,6 +110,10 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
   const telegramEnabled = cloud.telegram === 'connected' || cloud.telegram === 'retrying';
   const backupDestinations = [teraboxEnabled && 'TeraBox', telegramEnabled && 'Telegram'].filter(Boolean).join(' and ');
   const cloudEnabled = googleEnabled || megaEnabled || Boolean(backupDestinations);
+  const uploadDestination = importance === 'highly-important' ? (googleEnabled ? 'Google Drive' : '')
+    : importance === 'important' ? (megaEnabled ? 'MEGA' : '')
+      : (teraboxEnabled ? 'TeraBox' : telegramEnabled ? 'Telegram Backup Channel' : '');
+  const requiredProvider = importance === 'highly-important' ? 'Google Drive' : importance === 'important' ? 'MEGA' : 'TeraBox or Telegram Backup Channel';
 
   useEffect(() => {
     const controller = new AbortController();
@@ -250,7 +254,7 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
           <Trash2 size={18} /> Recycle bin
         </button>
     </>} storage={<>
-        <div className="storage-label"><HardDrive size={16} /><span>Local storage</span></div>
+        {!cloud.cloudOnly && <div className="storage-label"><HardDrive size={16} /><span>Local storage</span></div>}
         {cloud.googleDrive !== 'off' && <div className="storage-label"><Cloud size={16} />{connectionLabel('Google Drive', cloud.googleDrive)}</div>}
         {cloud.mega !== 'off' && <div className="storage-label"><Cloud size={16} />{connectionLabel('MEGA', cloud.mega)}</div>}
         {cloud.terabox !== 'off' && <div className="storage-label"><Cloud size={16} />{connectionLabel('TeraBox', cloud.terabox)}</div>}
@@ -274,7 +278,9 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
           <div><h1>{title}</h1>{search && <p>Results for “{search}”</p>}</div>
           {canUpload && <div className="actions">
             <button onClick={() => setEdit({ action: 'new' })}><FolderPlus size={17} /> New folder</button>
-            <button className="primary" disabled={active} onClick={() => fileInput.current?.click()}><Upload size={17} /> Upload</button>
+            {cloud.cloudOnly && !cloudEnabled
+              ? <a className="primary" href="/connections">Connect a cloud account</a>
+              : <button className="primary" disabled={active} onClick={() => fileInput.current?.click()}><Upload size={17} /> Upload</button>}
             <input ref={fileInput} hidden type="file" multiple onChange={(event) => {
               choose(Array.from(event.target.files ?? []));
               event.target.value = '';
@@ -373,7 +379,10 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
       <form onSubmit={(event) => { event.preventDefault(); void runUploads(selected, parentId, importance); }}>
         <ul className="upload-files">{selected.map((file, index) => <li key={index}><span>{file.name}</span><span>{formatSize(file.size)}</span></li>)}</ul>
         <ImportanceField value={importance} change={setImportance} />
-        <p className="muted">Encrypted local storage</p>
+        {cloud.cloudOnly ? (uploadDestination
+          ? <p className="muted">Encrypted storage on {uploadDestination}.</p>
+          : <p className="warning">Connect {requiredProvider} in <a href="/connections">Account connections</a> before uploading.</p>)
+          : <><p className="muted">Encrypted local storage</p>
         {importance === 'highly-important' && <p className={googleEnabled ? 'muted' : 'warning'}>{googleEnabled
           ? 'A verified Google Drive copy will be added in the background.'
           : 'A Google Drive copy will be added after you connect your account.'}</p>}
@@ -382,8 +391,9 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
           : 'A MEGA copy will be added after you connect your account.'}</p>}
         {importance === 'backup' && <p className={backupDestinations ? 'muted' : 'warning'}>{backupDestinations
           ? 'Blackbox will verify a backup copy on ' + backupDestinations + '.'
-          : 'Connect TeraBox or Telegram to add a cloud backup.'}</p>}
-        <footer className="modal-actions"><button type="button" onClick={() => setSelected([])}>Cancel</button><button className="primary">Start upload</button></footer>
+          : 'Connect TeraBox or Telegram to add a cloud backup.'}</p>}</>}
+        <footer className="modal-actions"><button type="button" onClick={() => setSelected([])}>Cancel</button>
+          <button className="primary" disabled={cloud.cloudOnly && !uploadDestination}>Start upload</button></footer>
       </form>
     </Modal>}
 

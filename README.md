@@ -46,6 +46,8 @@ The storage-core tests can run without third-party packages using `node --test s
 
 For a local check of the built UI, run `npm run build`, set `APP_ORIGIN=http://127.0.0.1:4174` in `.env`, then run `npm start` and open [http://127.0.0.1:4174](http://127.0.0.1:4174).
 
+HTTPS deployments require a connected cloud provider for new uploads. Highly Important files go to Google Drive, Important files go to MEGA, and Backup files go to TeraBox when connected or to a connected Telegram Backup Channel. Blackbox keeps encrypted staging files during transfers and deletes them after cloud verification or after 24 hours of upload inactivity. Existing local files remain accessible. The VPS keeps the file index, storage key, and connection credentials.
+
 For the browser check, sign in, open **My files**, and upload a test image, PDF, and plain text file. Open both previews and download the text file. Move a disposable copy to the Recycle Bin, return to **Dashboard** to check the change, then restore the copy. Repeat at a narrow viewport before packaging the Android client.
 
 See [development status](DEVELOPMENT_STATUS.md), [architecture](docs/ARCHITECTURE.md) and [API](docs/API.md).

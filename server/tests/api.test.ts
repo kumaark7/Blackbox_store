@@ -17,6 +17,24 @@ import { DIGEST_BYTES, FRAME_OVERHEAD, dataEnd } from '../src/storage/format.ts'
 const origin = 'https://blackbox.test';
 const password = 'fixture-password-only';
 
+test('hosted storage rejects uploads without a connected account before writing file bytes', async (t) => {
+  const { app, login, dataDir } = await fixture(t, true, '32', { CLOUD_ONLY_UPLOADS: 'true' });
+  const session = (await login()).cookies[0];
+  const headers = { cookie: session.name + '=' + session.value, origin };
+  const start = await app.inject({ method: 'POST', url: '/api/transfers', headers,
+    payload: { name: 'blocked.bin', importance: 'backup', size: 4, fingerprint: '0'.repeat(64) } });
+  assert.equal(start.statusCode, 409);
+  assert.match(start.body, /Connect TeraBox or Telegram Backup Channel/);
+  const raw = await app.inject({ method: 'POST', url: '/api/uploads?name=blocked.bin&importance=important',
+    headers: { ...headers, 'content-type': 'application/octet-stream' }, payload: Buffer.from('data') });
+  assert.equal(raw.statusCode, 409);
+  assert.match(raw.body, /Connect MEGA/);
+  assert.deepEqual(await readdir(join(dataDir, 'objects')), []);
+  const usage = await app.inject({ url: '/api/storage/usage', headers });
+  assert.equal(usage.json().cloudOnly, true);
+  assert.equal(usage.json().disk, null);
+});
+
 test('authenticated resumable uploads save offsets, enforce origin and support empty files', async (t) => {
   const { app, login } = await fixture(t);
   const session = (await login()).cookies[0];
@@ -59,7 +77,7 @@ async function fixture(t: TestContext, configureOwner = true, maxUploadBytes = '
     await app?.close();
     await rm(dataDir, { recursive: true, force: true });
   });
-  const config = loadConfig({ ...env, DATA_DIR: dataDir, APP_ORIGIN: origin, MAX_UPLOAD_BYTES: maxUploadBytes });
+  const config = loadConfig({ CLOUD_ONLY_UPLOADS: 'false', ...env, DATA_DIR: dataDir, APP_ORIGIN: origin, MAX_UPLOAD_BYTES: maxUploadBytes });
   const db = openDatabase(dataDir);
   try {
     if (configureOwner) {

@@ -62,6 +62,10 @@ export async function readFrame(
   file: FileHandle, master: Buffer, key: string, offset: number, length: number, footer = false,
 ) {
   const frame = await readExactly(file, length + FRAME_OVERHEAD, dataEnd(offset));
+  return openFrame(master, key, offset, length, frame, footer);
+}
+
+export function openFrame(master: Buffer, key: string, offset: number, length: number, frame: Buffer, footer = false) {
   const context = frameContext(key, offset, length, footer);
   const decipher = createDecipheriv('aes-256-gcm', frameKey(master, frame.subarray(0, 32), context), nonce,
     { authTagLength: 16 });

@@ -97,13 +97,22 @@ export async function buildApp(config: Config, options: { logger?: boolean } = {
     exposeHeadRoutes: false,
   });
   const drive = await Drive.open(config.dataDir, config.maxUploadBytes, config.maxConcurrentUploads,
-    { mega: config.mega, megaExecutable: config.megaExecutable, telegramClientDir: config.telegramClientDir });
+    { mega: config.mega, megaExecutable: config.megaExecutable, telegramClientDir: config.telegramClientDir,
+      cloudOnly: config.cloudOnly });
   const auth = new OwnerAuth(drive.index.db, config.sessionSeconds);
   const connections = new Connections(drive, auth, config);
+  let cacheCleanup: Promise<void> | undefined;
+  const cacheTimer = setInterval(() => {
+    cacheCleanup ??= drive.expireCloudTransfers()
+      .catch((error) => app.log.error(error, 'Upload cache cleanup failed'))
+      .finally(() => { cacheCleanup = undefined; });
+  }, 60_000).unref();
   const sessionName = config.secureCookies ? '__Host-blackbox_session' : 'blackbox_session';
   const token = (request: FastifyRequest) => request.cookies[sessionName];
   app.addHook('onClose', async () => {
+    clearInterval(cacheTimer);
     try {
+      await cacheCleanup;
       await connections.close();
       await Promise.all([drive.googleDrive.stop(), drive.mega.stop(), drive.terabox.stop(), drive.telegram.stop()]);
     } finally { drive.close(); }
@@ -214,13 +223,14 @@ export async function buildApp(config: Config, options: { logger?: boolean } = {
         });
         secured.get('/entries', async (request) => drive.index.browse(listing.parse(request.query)));
         secured.get('/storage', async () => ({ googleDrive: drive.googleDrive.status(), mega: drive.mega.status(),
-          terabox: drive.terabox.status(), telegram: drive.telegram.status() }));
+          terabox: drive.terabox.status(), telegram: drive.telegram.status(), cloudOnly: drive.cloudOnly }));
         secured.get('/storage/usage', async () => {
           const [local, cloud] = await Promise.all([
-            localUsage(config.dataDir, drive.storage.directory, drive.index.trashObjectKeys()),
+            drive.cloudOnly ? { appBytes: 0, trashBytes: 0, disk: null }
+              : localUsage(config.dataDir, drive.storage.directory, drive.index.trashObjectKeys()),
             cloudUsage(drive),
           ]);
-          return { ...local, cloud };
+          return { ...local, cloud, cloudOnly: drive.cloudOnly };
         });
         secured.post('/folders', async (request, reply) => {
           const input = destination.parse(request.body);

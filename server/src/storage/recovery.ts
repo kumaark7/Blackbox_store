@@ -87,7 +87,7 @@ function completeObjects(db: DatabaseSync) {
     UNION SELECT nodes.id FROM nodes JOIN purging ON nodes.parent_id = purging.id
   )
   SELECT object_key AS key, size, sha256, storage_format AS format FROM nodes
-  WHERE kind = 'file' AND state != 'pending' AND id NOT IN (SELECT id FROM purging)`).iterate() as Iterable<StoredObject>;
+  WHERE kind = 'file' AND state != 'pending' AND cloud_only = 0 AND id NOT IN (SELECT id FROM purging)`).iterate() as Iterable<StoredObject>;
 }
 
 async function syncFile(path: string) {
@@ -106,7 +106,7 @@ async function copyObject(source: string, destination: string, optional = false)
 
 async function copyPending(db: DatabaseSync, source: LocalStorage, destination: LocalStorage) {
   const pending = db.prepare(`SELECT object_key AS key, received_bytes AS received FROM transfers JOIN nodes
-    ON node_id = nodes.id WHERE state = 'pending'`).iterate() as Iterable<{ key: string; received: number }>;
+    ON node_id = nodes.id WHERE state = 'pending' AND cloud_only = 0`).iterate() as Iterable<{ key: string; received: number }>;
   for (const { key, received } of pending) {
     const published = await copyObject(source.path(key), destination.path(key), true);
     const partial = await copyObject(source.path(key) + '.part', destination.path(key) + '.part', true);
@@ -175,6 +175,8 @@ export async function restoreDrive(backupDir: string, output: string, passphrase
         if (!await restored.verify({ ...object, format: 1 })) throw new Error('A restored file failed verification.');
       }
       await copyPending(db, objects, restored);
+      db.exec(`UPDATE transfers SET received_bytes = 0 WHERE node_id IN
+        (SELECT id FROM nodes WHERE cloud_only = 1 AND state = 'pending')`);
       db.exec("UPDATE nodes SET storage_format = 1 WHERE kind = 'file' AND state != 'pending'; DELETE FROM sessions;");
     } finally { db.close(); }
     await syncFile(metadata);

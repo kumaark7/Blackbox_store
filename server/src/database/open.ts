@@ -10,7 +10,7 @@ export function openDatabase(dataDir: string): DatabaseSync {
     db.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
     db.exec('BEGIN IMMEDIATE');
     const migrations = ['001-initial.sql', '002-trash-purges.sql', '003-encrypted-transfers.sql', '004-google-drive.sql',
-      '005-mega.sql', '006-terabox.sql', '007-telegram.sql', '008-telegram-upload-bot.sql'];
+      '005-mega.sql', '006-terabox.sql', '007-telegram.sql', '008-telegram-upload-bot.sql', '009-cloud-only.sql'];
     const version = Number(db.prepare('PRAGMA user_version').get()?.user_version);
     if (version < 0 || version > migrations.length) {
       throw new Error('Unsupported metadata schema version.');

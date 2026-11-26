@@ -7,7 +7,7 @@ import { addAbortSignal, Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { DriveError } from '../errors.ts';
 import type { StorageAdapter, StoredObject } from './adapter.ts';
-import { CHUNK_BYTES, DIGEST_BYTES, FRAME_OVERHEAD, HEADER, checkHeader, dataEnd, readFrame, sealFrame, writeExactly } from './format.ts';
+import { CHUNK_BYTES, DIGEST_BYTES, FRAME_OVERHEAD, HEADER, checkHeader, dataEnd, openFrame, readFrame, sealFrame, writeExactly } from './format.ts';
 import { missingFile, syncDirectory } from './key.ts';
 
 export class LocalStorage implements StorageAdapter {
@@ -276,6 +276,49 @@ export class LocalStorage implements StorageAdapter {
         }
       } finally { await input.close(); }
     })(), { objectMode: false });
+  }
+
+  decodeCloudObject(object: StoredObject, source: Readable) {
+    const master = this.master;
+    const { key, size, sha256 } = object;
+    const unavailable = () => new DriveError(503, 'The cloud file failed verification.');
+    return Readable.from((async function* () {
+      const input = source[Symbol.asyncIterator]();
+      let remaining = Buffer.alloc(0);
+      async function read(length: number) {
+        const result = Buffer.allocUnsafe(length);
+        let offset = 0;
+        while (offset < length) {
+          if (!remaining.length) {
+            const item = await input.next();
+            if (item.done) throw unavailable();
+            remaining = Buffer.isBuffer(item.value) ? item.value : Buffer.from(item.value);
+          }
+          const copied = remaining.copy(result, offset);
+          remaining = remaining.subarray(copied);
+          offset += copied;
+        }
+        return result;
+      }
+      try {
+        if (!(await read(HEADER.length)).equals(HEADER)) throw unavailable();
+        const hash = createHash('sha256');
+        let last: Buffer | undefined;
+        for (let offset = 0; offset < size; offset += CHUNK_BYTES) {
+          const length = Math.min(CHUNK_BYTES, size - offset);
+          const bytes = openFrame(master, key, offset, length, await read(length + FRAME_OVERHEAD));
+          hash.update(bytes);
+          if (last) yield last;
+          last = bytes;
+        }
+        const footer = openFrame(master, key, size, DIGEST_BYTES, await read(DIGEST_BYTES + FRAME_OVERHEAD), true);
+        if (remaining.length || !(await input.next()).done || !footer.equals(hash.digest())
+          || footer.toString('hex') !== sha256) throw unavailable();
+        if (last) yield last;
+      } finally {
+        source.destroy();
+      }
+    })(), { objectMode: false }).once('close', () => source.destroy());
   }
 
   async delete(key: string) {

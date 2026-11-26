@@ -11,6 +11,7 @@ import type { TestContext } from 'node:test';
 import { Drive } from '../src/files/drive.ts';
 import { ROOT_ID } from '../src/files/index.ts';
 import { CHUNK_BYTES } from '../src/storage/format.ts';
+import type { CloudProvider } from '../src/storage/adapter.ts';
 import { backupDrive, restoreDrive } from '../src/storage/recovery.ts';
 
 async function fixture(t: TestContext, uploadLimit = 128, concurrency = 1) {
@@ -41,6 +42,56 @@ const transferInput = (name: string, ...chunks: Buffer[]) => ({
 });
 const append = (drive: Drive, id: string, offset: number, chunk: Buffer) =>
   drive.appendTransfer(id, offset, () => Readable.from([chunk]), new AbortController().signal);
+
+test('cloud-only transfers verify remote storage, clear temporary bytes, and download after restart', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'blackbox-cloud-only-'));
+  const remote = new Map<string, Buffer>();
+  let available = false;
+  const provider: CloudProvider = {
+    async allocate(_signal, key) { return key; },
+    async upload(id, _object, path) {
+      if (!available) throw new Error('Provider unavailable');
+      remote.set(id, await readFile(path));
+    },
+    async verify(id, object) {
+      const bytes = remote.get(id);
+      return Boolean(bytes && bytes.length === object.bytes && digest(bytes).toString('hex') === object.checksum);
+    },
+    async download(id) {
+      const bytes = remote.get(id)!;
+      return Readable.from([Uint8Array.from(bytes.subarray(0, 3)), bytes.subarray(3)]);
+    },
+    async delete(id) { remote.delete(id); },
+  };
+  const open = () => Drive.open(directory, 128, 1, { cloudOnly: true, telegramProvider: provider });
+  let drive = await open();
+  t.after(async () => {
+    drive.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const bytes = Buffer.from('encrypted cloud only');
+  const transfer = drive.startTransfer(transferInput('cloud.bin', bytes));
+  await append(drive, transfer.id, 0, bytes);
+  await assert.rejects(drive.finishTransfer(transfer.id), { status: 503 });
+  assert.equal(browse(drive).items.length, 0);
+  available = true;
+  const done = await drive.finishTransfer(transfer.id);
+  assert.equal(done.completed, true);
+  assert.equal(browse(drive).items[0].storage, 'cloud');
+  assert.deepEqual(await readdir(join(directory, 'objects')), []);
+  drive.close();
+  drive = await open();
+  assert.deepEqual(await buffer((await drive.download(transfer.id)).stream), bytes);
+  assert.deepEqual(await readdir(join(directory, 'objects')), []);
+  drive.index.moveToTrash(transfer.id);
+  await drive.purge(transfer.id);
+  assert.equal(remote.size, 0);
+  const stale = drive.startTransfer(transferInput('expired.bin', bytes));
+  await append(drive, stale.id, 0, bytes);
+  await drive.expireCloudTransfers(Date.now() + 25 * 60 * 60_000);
+  assert.deepEqual(drive.listTransfers(), []);
+  assert.deepEqual(await readdir(join(directory, 'objects')), []);
+});
 
 test('SQLite opens in WAL mode with foreign keys and one active drive per directory', async (t) => {
   const { drive, directory } = await fixture(t);
@@ -258,7 +309,7 @@ test('a version-one drive keeps existing folders and plaintext files across migr
 
   const drive = await Drive.open(directory, 128, 1);
   try {
-    assert.equal(drive.index.db.prepare('PRAGMA user_version').get()?.user_version, 8);
+    assert.equal(drive.index.db.prepare('PRAGMA user_version').get()?.user_version, 9);
     assert.equal(browse(drive).items[0].name, 'Existing folder');
     assert.equal(drive.index.get(legacyId).storageFormat, 0);
     assert.deepEqual(await buffer((await drive.download(legacyId)).stream), bytes);

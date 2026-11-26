@@ -15,7 +15,7 @@ export type Entry = {
   importance: Importance | null;
   size: number | null;
   updatedAt: number;
-  storage: 'local' | null;
+  storage: 'cloud' | 'local' | null;
   protection: 'single-copy' | 'degraded' | 'replicated' | null;
   deletionPending: boolean;
   preview: 'image' | 'pdf' | null;
@@ -34,6 +34,7 @@ export const cloudNames: Record<CloudProvider, string> = {
   'google-drive': 'Google Drive', mega: 'MEGA', terabox: 'TeraBox', telegram: 'Telegram',
 };
 export type StorageUsage = {
+  cloudOnly: boolean;
   appBytes: number;
   trashBytes: number;
   disk: { totalBytes: number; availableBytes: number } | null;
