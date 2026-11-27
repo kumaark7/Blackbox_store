@@ -305,7 +305,17 @@ dialog::backdrop { background: #030614ba; }
 .files-skeleton i { height: 100px; }
 .upload-destinations { display: flex; flex-wrap: wrap; gap: 10px; }
 .native-search { width: min(195px, 100%); }
-.cloud-file-list > li { grid-template-columns: minmax(0, 1fr) auto; }
+.cloud-file-list > li { grid-template-columns: minmax(0, 1fr) auto auto; }
+.cloud-file-list .entry-actions { grid-column: -2 / -1; }
+.folder-open { text-align: left; }
+.folder-open .entry-icon { flex: none; }
+.file-tile .folder-open::after { content: ''; position: absolute; inset: 0; border-radius: inherit; }
+.file-tile:has(.folder-open:focus-visible) { outline: 2px solid #a3d5ff; outline-offset: 2px; }
+.file-tile .entry-actions { z-index: 1; }
+.file-tile .entry-actions:has(details[open]), .file-tile .entry-actions[open] { z-index: 2; }
+.cloud-item-info { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 16px; margin: 16px 0; }
+.cloud-item-info dt { color: var(--muted); }
+.cloud-item-info dd { margin: 0; overflow-wrap: anywhere; }
 .native-file-grid .cloud-file-size { justify-content: flex-start; color: var(--muted); }
 #security { scroll-margin-top: 76px; }
 

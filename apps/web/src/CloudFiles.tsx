@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowDownToLine, ChevronRight, ExternalLink, File, Folder, Grid2X2, List, Search, Upload } from 'lucide-react';
+import { ArrowDownToLine, ChevronRight, Ellipsis, ExternalLink, File, Folder, Grid2X2, Info, List, Search, Upload } from 'lucide-react';
 import { api } from './api';
 import { formatSize } from './formatSize';
 import { Workspace } from './Workspace';
@@ -23,6 +23,8 @@ export function CloudFiles({ provider, onLogout }: { provider: Provider; onLogou
   const name = cloudFileProviders[provider];
   const endpoint = '/cloud/' + provider;
   const input = useRef<HTMLInputElement>(null);
+  const infoDialog = useRef<HTMLDialogElement>(null);
+  const [info, setInfo] = useState<CloudEntry>();
   const [trail, setTrail] = useState<FolderLocation[]>([]);
   const [listing, setListing] = useState<Listing | null>(null);
   const [revision, setRevision] = useState(0);
@@ -150,27 +152,66 @@ export function CloudFiles({ provider, onLogout }: { provider: Provider; onLogou
           </div>
         </div>
         {visible.length ? <ul className={grid ? 'file-grid native-file-grid' : 'cloud-file-list'}>
-          {visible.map((entry, index) => <li key={entry.id + ':' + index} className={grid ? 'file-tile' : undefined}>
-            {entry.folder ? <div className="entry-name">
-              <span className="entry-icon folder"><Folder size={grid ? 28 : 18} aria-hidden="true" /></span>
-              <button className="text-button file-name" title={entry.name} disabled={busy}
-                onClick={() => navigate([...trail, entry])}>{entry.name}</button>
-            </div> : <>
-              <div className="entry-name">
-                <span className="entry-icon"><File size={grid ? 28 : 18} aria-hidden="true" /></span>
-                <a className="file-name" title={entry.name}
-                  href={entry.openUrl ?? '/api' + endpoint + '/download?' + new URLSearchParams({ id: entry.id })}
-                  target={entry.openUrl ? '_blank' : undefined} rel={entry.openUrl ? 'noopener noreferrer' : undefined}>{entry.name}</a>
-              </div>
-              <span className="cloud-file-size">{entry.size === null ? '' : formatSize(entry.size)}
-                {entry.openUrl ? <ExternalLink size={15} aria-hidden="true" /> : <ArrowDownToLine size={15} aria-hidden="true" />}</span>
-            </>}
-          </li>)}
+          {visible.map((entry, index) => {
+            const entryUrl = entry.openUrl ?? '/api' + endpoint + '/download?' + new URLSearchParams({ id: entry.id });
+            return <li key={entry.id + ':' + index} className={grid ? 'file-tile' : undefined}>
+              {entry.folder ? <button type="button" className="entry-name text-button folder-open" title={entry.name}
+                disabled={busy} onClick={() => navigate([...trail, entry])}>
+                <span className="entry-icon folder"><Folder size={grid ? 28 : 18} aria-hidden="true" /></span>
+                <span className="file-name">{entry.name}</span>
+              </button> : <>
+                <div className="entry-name">
+                  <span className="entry-icon"><File size={grid ? 28 : 18} aria-hidden="true" /></span>
+                  <a className="file-name" title={entry.name}
+                    href={entryUrl}
+                    target={entry.openUrl ? '_blank' : undefined} rel={entry.openUrl ? 'noopener noreferrer' : undefined}>{entry.name}</a>
+                </div>
+                <span className="cloud-file-size">{entry.size === null ? '' : formatSize(entry.size)}
+                  {entry.openUrl ? <ExternalLink size={15} aria-hidden="true" /> : <ArrowDownToLine size={15} aria-hidden="true" />}</span>
+              </>}
+              <details className="entry-actions" name="native-file-actions" onKeyDown={(event) => {
+                if (event.key === 'Escape' && event.currentTarget.open) {
+                  event.currentTarget.open = false;
+                  event.currentTarget.querySelector('summary')?.focus();
+                }
+              }}>
+                <summary className="icon" aria-label={'Actions for ' + entry.name}><Ellipsis size={19} aria-hidden="true" /></summary>
+                <div className="menu" onClickCapture={(event) => {
+                  const menu = event.currentTarget.closest('details');
+                  if (menu && (event.target as Element).closest('button, a')) {
+                    menu.open = false;
+                    menu.querySelector('summary')?.focus();
+                  }
+                }}>
+                  {entry.folder ? <button type="button" disabled={busy} onClick={() => navigate([...trail, entry])}>
+                    <Folder size={16} aria-hidden="true" /> Open folder
+                  </button> : <a href={entryUrl} target={entry.openUrl ? '_blank' : undefined}
+                    rel={entry.openUrl ? 'noopener noreferrer' : undefined}>
+                    {entry.openUrl ? <><ExternalLink size={16} aria-hidden="true" /> Open in {name}</>
+                      : <><ArrowDownToLine size={16} aria-hidden="true" /> Download</>}
+                  </a>}
+                  <button type="button" onClick={() => {
+                    setInfo(entry);
+                    infoDialog.current?.showModal();
+                  }}><Info size={16} aria-hidden="true" /> Info</button>
+                </div>
+              </details>
+            </li>;
+          })}
         </ul> : <p className="empty">{filter ? 'No matching loaded files.' : 'This folder is empty.'}</p>}
         {listing.next && <div className="paging"><button disabled={busy} onClick={() => void loadMore()}>
           {paging ? 'Loading files' : 'Load more'}
         </button></div>}
       </section>}
     </div></main>
+    <dialog ref={infoDialog} aria-labelledby="cloud-item-info-title" onClose={() => setInfo(undefined)}>
+      <h2 id="cloud-item-info-title">{info?.folder ? 'Folder info' : 'File info'}</h2>
+      {info && <dl className="cloud-item-info">
+        <dt>Name</dt><dd>{info.name}</dd>
+        <dt>Provider</dt><dd>{name}</dd>
+        {info.size !== null && <><dt>Size</dt><dd>{formatSize(info.size)}</dd></>}
+      </dl>}
+      <form method="dialog" className="modal-actions"><button autoFocus>Close</button></form>
+    </dialog>
   </Workspace>;
 }

@@ -478,13 +478,15 @@ function FileRow({ entry, grid, trash, open, onPreview, onEdit, restore }: {
   const thumbnail = grid && !trash && entry.thumbnail;
   return <li className={grid ? 'file-tile' : 'file-row'}>
     {thumbnail && <TileThumbnail key={entry.updatedAt} entry={entry} onPreview={onPreview} />}
-    <div className="entry-name">
+    {folder && !trash ? <button type="button" className="entry-name text-button folder-open" title={entry.name} onClick={open}>
+      <span className="entry-icon folder" aria-hidden="true">{icon}</span>
+      <span className="file-name">{entry.name}</span>
+    </button> : <div className="entry-name">
       {!thumbnail && <span className={folder ? 'entry-icon folder' : 'entry-icon'}>{icon}</span>}
-      {trash ? <span className="file-name">{entry.name}</span> : folder ?
-        <button className="text-button file-name" title={entry.name} onClick={open}>{entry.name}</button> : entry.preview ?
+      {trash ? <span className="file-name">{entry.name}</span> : entry.preview ?
         <button className="text-button file-name" title={entry.name} onClick={onPreview}>{entry.name}</button> :
         <a className="file-name" title={entry.name} href={download}>{entry.name}</a>}
-    </div>
+    </div>}
     <span className="entry-priority">{entry.deletionPending ? <span className="priority degraded">Deletion pending</span> :
       entry.importance && <span data-priority={entry.importance} className={entry.protection === 'degraded' ? 'priority degraded' : 'priority'}
       title={entry.protection === 'degraded' ? 'Awaiting a verified Google Drive copy' + (replicas ? '. Verified on ' + replicas : '')
