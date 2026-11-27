@@ -208,7 +208,8 @@ export function AccountConnections({ onLogout }: { onLogout: () => void }) {
         {flow?.status === 'connected' && flow.provider !== 'googleDrive' && flow.provider !== 'mega' && flow.provider !== 'terabox'
           && <p role="status">{providers[flow.provider]} connected.</p>}
         <h2>{providers[provider]}</h2>
-        {(provider === 'telegram' || provider === 'telegramBot') && <a href="/connections/telegram-help">Telegram setup instructions</a>}
+        {(provider === 'telegram' || provider === 'telegramBot') && <a href="/connections/telegram-help"
+          target="_blank" rel="noopener noreferrer">Telegram setup instructions (opens in a new tab)</a>}
         {provider === 'telegramBot' && state.telegramBotUsername && <a href={'https://t.me/' + state.telegramBotUsername}
           target="_blank" rel="noopener noreferrer">Open @{state.telegramBotUsername} in Telegram</a>}
         {provider === 'googleDrive' ? (
@@ -237,21 +238,39 @@ export function AccountConnections({ onLogout }: { onLogout: () => void }) {
 
 export function TelegramHelp({ onLogout }: { onLogout: () => void }) {
   return <SettingsPage page="connections" title="Telegram setup" onLogout={onLogout}>
-    <a href="/connections">Back to Account connections</a>
-    <section className="settings-panel">
-      <h2>Backup channel</h2>
-      <ol className="setup-steps">
-        <li>Open <a href="https://my.telegram.org" target="_blank" rel="noopener noreferrer">my.telegram.org</a>, sign in, and select <strong>API development tools</strong>. Create an app to get its API ID and API hash.</li>
-        <li>Create a private Telegram channel you own. Post a message and copy its link. In <code>https://t.me/c/1234567890/17</code>, the channel ID is <code>1234567890</code>.</li>
-        <li>In Account connections, select <strong>Telegram Backup Channel</strong>, enter those three values, then follow the phone and verification prompts. The server needs the Telegram MTProto client installed.</li>
-      </ol>
-    </section>
+    <p>Use the Upload Bot to send files to Blackbox from Telegram. Use the Backup Channel to store encrypted copies of files in Telegram. You can set up either or both.</p>
+    <p><a href="https://t.me/EZ_IDS_Finder_bot" target="_blank" rel="noopener noreferrer">@EZ_IDS_Finder_bot</a> finds numeric IDs.
+      Enter tokens, API hashes, and login codes in Blackbox when prompted. Keep them out of Telegram chats.</p>
     <section className="settings-panel">
       <h2>Upload bot</h2>
       <ol className="setup-steps">
-        <li>Open <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">@BotFather</a> and send <code>/newbot</code>. Copy the token it gives you.</li>
-        <li>In Telegram Desktop, open <strong>Settings → Advanced → Export Telegram data</strong>. Export <strong>Account information</strong> as JSON. Open <code>result.json</code> on your computer and find <code>user_id</code> under <code>personal_information</code>.</li>
-        <li>Enter the token and user ID under <strong>Telegram Upload Bot</strong>. Open the bot from the connection page, tap <strong>Start</strong>, and send a document as a file.</li>
+        <li>Open <a href="https://t.me/EZ_IDS_Finder_bot" target="_blank" rel="noopener noreferrer">@EZ_IDS_Finder_bot</a>,
+          tap <strong>Start</strong>, and send <code>/id</code>. Copy your numeric <strong>User ID</strong>.</li>
+        <li>Open <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">@BotFather</a> and send <code>/newbot</code>.
+          Follow the prompts to create a dedicated Blackbox upload bot, then copy its token.</li>
+        <li>In Blackbox, open <strong>Account connections → Telegram Upload Bot</strong>. Paste the dedicated bot’s token into
+          <strong> Bot token</strong> and your ID into <strong>Your numeric Telegram user ID</strong>. Click <strong>Connect Telegram Upload Bot</strong>.</li>
+        <li>Open your upload bot using the link in Blackbox. Tap <strong>Start</strong>, send a small document as a file, and choose its storage priority.</li>
+      </ol>
+    </section>
+    <section className="settings-panel">
+      <h2>Backup channel</h2>
+      <p>The Blackbox server needs the Telegram client installed and <code>TELEGRAM_CLIENT_DIR</code> set.
+        {' '}<a href="https://github.com/kumaark7/Blackbox_store/blob/main/docs/TELEGRAM_SETUP.md"
+          target="_blank" rel="noopener noreferrer">Server setup instructions</a>.</p>
+      <ol className="setup-steps">
+        <li>Create a private broadcast channel with your Telegram account and keep message auto-delete off.</li>
+        <li>Open <a href="https://t.me/EZ_IDS_Finder_bot" target="_blank" rel="noopener noreferrer">@EZ_IDS_Finder_bot</a>, tap
+          <strong> Select Channel</strong>, and pick your backup channel. If the ID is shown as <code>-1001234567890</code>,
+          enter <code>1234567890</code> in Blackbox. If the selector doesn’t show the channel, post a test message and copy
+          its link. In <code>https://t.me/c/1234567890/17</code>, use <code>1234567890</code>.</li>
+        <li>Sign in at <a href="https://my.telegram.org" target="_blank" rel="noopener noreferrer">my.telegram.org</a> with the
+          account that owns the channel. Open <strong>API development tools</strong> and copy your <strong>API ID</strong> and
+          <strong> API hash</strong>. Create an app there if you haven’t already.</li>
+        <li>In Blackbox, open <strong>Account connections → Telegram Backup Channel</strong>. Enter the API ID, API hash, and
+          private channel ID. Click <strong>Connect Telegram Backup Channel</strong> and follow the phone and verification prompts.</li>
+        <li>With TeraBox disconnected, upload a small file in Blackbox and choose <strong>Backup</strong>. Once verified,
+          its Telegram copy appears as an encrypted document in your channel.</li>
       </ol>
     </section>
   </SettingsPage>;
