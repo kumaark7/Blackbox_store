@@ -185,7 +185,7 @@ test('login management protects mutations, revokes other sessions, and invalidat
 test('Google connects from the site with a session-bound OAuth flow and activates the replica adapter', async (t) => {
   const clientId = 'fixture.apps.googleusercontent.com';
   const clientSecret = 'fixture-secret';
-  const { app, login } = await fixture(t, true, '32', {
+  const { app, login, dataDir } = await fixture(t, true, '32', {
     GOOGLE_OAUTH_CLIENT_ID: clientId, GOOGLE_OAUTH_CLIENT_SECRET: clientSecret,
   });
   const session = (await login()).cookies[0];
@@ -245,15 +245,36 @@ test('Google connects from the site with a session-bound OAuth flow and activate
   assert.equal(JSON.stringify(connected).includes('fixture-refresh'), false);
   assert.equal(mock.mock.callCount(), 2);
   assert.equal((await app.inject(callback + '?state=' + state + '&code=fixture-auth-code')).statusCode, 400);
+
+  const disconnect = { method: 'DELETE', url: url + '/google' } as const;
+  assert.equal((await app.inject({ ...disconnect, headers: { origin } })).statusCode, 401);
+  assert.equal((await app.inject({ ...disconnect, headers: { ...headers, origin: 'https://other.test' } })).statusCode, 403);
+  const disconnected = await app.inject({ ...disconnect, headers });
+  assert.equal(disconnected.statusCode, 200, disconnected.body);
+  assert.equal(disconnected.json().providers.googleDrive, 'reconnect');
+  assert.equal(disconnected.json().googleReady, true);
+  assert.equal(disconnected.json().flow, null);
+  await assert.rejects(readFile(join(dataDir, 'google-drive.credentials')), { code: 'ENOENT' });
+  const db = openDatabase(dataDir);
+  try {
+    assert.ok(db.prepare('SELECT binding FROM google_drive_account WHERE id = 1').get()?.binding);
+  } finally {
+    db.close();
+  }
+  assert.equal(mock.mock.callCount(), 2);
 });
 
 test('TeraBox offers private QR and browser consent and remembers the verified application', async (t) => {
-  const { app, login } = await fixture(t);
+  const application = { clientId: 'app-key', clientSecret: 'secret-key', privateSecret: 'private-key', appFolder: '/apps/Blackbox' };
+  const { app, login } = await fixture(t, true, '32', {
+    TERABOX_CLIENT_ID: application.clientId, TERABOX_CLIENT_SECRET: application.clientSecret,
+    TERABOX_PRIVATE_SECRET: application.privateSecret, TERABOX_APP_FOLDER: application.appFolder,
+  });
   const session = (await login()).cookies[0];
   const other = (await login()).cookies[0];
   const headers = { origin, cookie: session.name + '=' + session.value };
   const expected = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-  const payload = { provider: 'terabox', clientId: 'app-key', clientSecret: 'secret-key', privateSecret: 'private-key', appFolder: '/apps/Blackbox' };
+  const payload = { provider: 'terabox' };
   t.mock.method(globalThis, 'fetch', async (input: URL, init: RequestInit) => {
     const endpoint = new URL(input);
     switch (endpoint.pathname) {
@@ -265,17 +286,21 @@ test('TeraBox offers private QR and browser consent and remembers the verified a
         return Response.json({ errno: 0, data: { access_token: 'fixture-access', refresh_token: 'fixture-refresh', expires_in: 3600 } });
       }
       case '/oauth/tokeninfo':
-        return Response.json({ errno: 0, data: { client_id: payload.clientId, user_id: '123456', api_domain: 'www.terabox.com',
+        return Response.json({ errno: 0, data: { client_id: application.clientId, user_id: '123456', api_domain: 'www.terabox.com',
           upload_domain: 'www.terabox.com' } });
       case '/openapi/api/list':
-        assert.equal(endpoint.searchParams.get('dir'), payload.appFolder);
+        assert.equal(endpoint.searchParams.get('dir'), application.appFolder);
         return Response.json({ errno: 0 });
       default: assert.fail('Unexpected provider request');
     }
   });
   const url = '/api/connections';
+  const override = await app.inject({ method: 'POST', url, headers, payload: { ...payload, ...application } });
+  assert.equal(override.statusCode, 400);
   const start = await app.inject({ method: 'POST', url, headers, payload });
   assert.equal(start.statusCode, 202, start.body);
+  assert.equal(start.json().teraboxReady, true);
+  assert.equal(start.body.includes(application.privateSecret), false);
   const waitFor = async (check: () => Promise<boolean>) => {
     for (let attempt = 0; attempt < 100; attempt++) {
       if (await check()) return;
@@ -303,7 +328,7 @@ test('TeraBox offers private QR and browser consent and remembers the verified a
     if (step?.kind !== 'teraboxWeb') return false;
     const loginUrl = new URL(step.url);
     assert.equal(loginUrl.origin + loginUrl.pathname, 'https://www.terabox.com/wap/outside/login');
-    assert.equal(loginUrl.searchParams.get('clientId'), payload.clientId);
+    assert.equal(loginUrl.searchParams.get('clientId'), application.clientId);
     promptId = step.id;
     return true;
   });

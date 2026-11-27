@@ -1,3 +1,4 @@
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { GoogleCredentials } from './google-drive.ts';
@@ -27,4 +28,8 @@ export async function readGoogleCredentials(dataDir: string, master: Buffer) {
 
 export function writeGoogleCredentials(dataDir: string, master: Buffer, credentials: GoogleCredentials) {
   return writeSealedJson(join(dataDir, filename), master, credentialsId, credentials);
+}
+
+export function removeGoogleCredentials(dataDir: string) {
+  return rm(join(dataDir, filename), { force: true });
 }

@@ -5,7 +5,7 @@ import type { OwnerAuth } from '../auth/owner.ts';
 import type { Config } from '../config.ts';
 import { DriveError } from '../errors.ts';
 import type { Drive } from '../files/drive.ts';
-import { bindGoogleDrive, readGoogleCredentials, writeGoogleCredentials } from '../storage/google-drive-credentials.ts';
+import { bindGoogleDrive, readGoogleCredentials, removeGoogleCredentials, writeGoogleCredentials } from '../storage/google-drive-credentials.ts';
 import { googleBinding, googleDriveScope, GoogleDriveStorage, requestGoogleToken } from '../storage/google-drive.ts';
 import { loadStorageKey } from '../storage/key.ts';
 import { managedMega, obscureMegaPassword, readMegaCredentials, saveMegaCredentials } from '../storage/mega-credentials.ts';
@@ -24,8 +24,7 @@ export const connectionInput = z.discriminatedUnion('provider', [
   z.strictObject({ provider: z.literal('mega'), email: z.email().max(254),
     password: secret.refine((value) => !/[\r\n]/.test(value) && Buffer.byteLength(value) <= 1024),
     folder: z.string().max(180).regex(/^[\w-]+(?:\/[\w-]+)*$/).optional() }),
-  z.strictObject({ provider: z.literal('terabox'), method: z.enum(['web', 'qr']).default('qr'),
-    clientId: secret.optional(), clientSecret: secret.optional(), privateSecret: secret.optional(), appFolder: secret.optional() }),
+  z.strictObject({ provider: z.literal('terabox'), method: z.enum(['web', 'qr']).default('qr') }),
   z.strictObject({ provider: z.literal('telegram'), apiId: z.number().int().min(1).max(2_147_483_647),
     apiHash: z.string().regex(/^[a-f0-9]{32}$/i), channelId: z.string().regex(/^[1-9][0-9]{0,15}$/) }),
   uploadBotInput.extend({ provider: z.literal('telegramBot') }),
@@ -92,8 +91,26 @@ export class Connections {
     };
   }
 
+  async disconnectGoogle(owner: string) {
+    if (this.closed || this.running) throw new DriveError(409, 'Wait for the current account connection to finish.');
+    this.running = this.drive.replaceCloudConnection(this.drive.googleDrive, async () => {
+      await removeGoogleCredentials(this.config.dataDir);
+      return null;
+    });
+    try {
+      await this.running;
+      if (this.job?.provider === 'googleDrive') this.job = undefined;
+      return this.status(owner);
+    } finally {
+      this.running = undefined;
+    }
+  }
+
   async start(owner: string, input: Input) {
     if (this.closed || this.running) throw new DriveError(409, 'An account connection is already in progress.');
+    if (input.provider === 'terabox' && !this.teraApp) {
+      throw new DriveError(503, 'TeraBox sign-in is unavailable until the site administrator enables it.');
+    }
     const controller = new AbortController();
     const job: Job = { owner, provider: input.provider, controller, status: 'pending',
       signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5 * 60_000)]) };
@@ -225,11 +242,7 @@ export class Connections {
         break;
       }
       case 'terabox': {
-        const { clientId, clientSecret, privateSecret, appFolder } = input;
-        const supplied = clientId || clientSecret || privateSecret || appFolder;
-        const application = supplied ? { clientId, clientSecret, privateSecret, appFolder } : this.teraApp;
-        if (!application) throw new DriveError(400, 'Configure a TeraBox Open Platform application in setup before connecting.');
-        const app = teraboxApplication(application);
+        const app = teraboxApplication(this.teraApp);
         if (input.method === 'web') {
           const url = 'https://www.terabox.com/wap/outside/login?' + new URLSearchParams({ clientId: app.clientId });
           const code = await this.prompt(job, { kind: 'teraboxWeb', id: nonce(), url });

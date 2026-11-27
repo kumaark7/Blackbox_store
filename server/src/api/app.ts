@@ -217,6 +217,7 @@ export async function buildApp(config: Config, options: { logger?: boolean } = {
           connections.cancel(token(request)!);
           return reply.code(204).send();
         });
+        secured.delete('/connections/google', async (request) => connections.disconnectGoogle(token(request)!));
         secured.get('/connections/qr', async (request, reply) => {
           const qr = connections.qr(token(request)!);
           return reply.type(qr.type).send(qr.bytes);

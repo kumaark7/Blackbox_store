@@ -19,7 +19,9 @@ Save the following as `terabox-connect.json` somewhere private outside the repos
 
 ## Connect from Blackbox Store
 
-In **Account connections**, select **TeraBox**, choose **Connect TeraBox**, and select **Sign in on TeraBox** or **Scan a QR code**. TeraBox handles browser sign-in in its own form. With the QR option, scan the displayed code in TeraBox's mobile app and confirm authorization. The first connection needs an approved TeraBox Open Platform app. Enter its details in the setup form or set the `TERABOX_*` variables shown in `.env.example` on the server.
+Before the first connection, set `TERABOX_CLIENT_ID` (AppKey), `TERABOX_CLIENT_SECRET` (SecretKey), `TERABOX_PRIVATE_SECRET` (PrivateSecret), and `TERABOX_APP_FOLDER` (the assigned application folder) in the server's `.env`. Restart Blackbox.
+
+In **Account connections**, select **TeraBox**, then choose **Sign in on TeraBox** or **Scan a QR code**. TeraBox handles browser sign-in in its own form. With the QR option, scan the displayed code in TeraBox's mobile app and confirm authorization.
 
 ## Connect from Windows CMD
 

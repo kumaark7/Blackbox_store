@@ -47,19 +47,13 @@ function field(label: string, name: string, type = 'text', maxLength = 1024) {
   return <label className="field">{label}<input required name={name} type={type} maxLength={maxLength} autoComplete="off" /></label>;
 }
 
-function ProviderFields({ provider }: { provider: Exclude<Provider, 'googleDrive'> }) {
+function ProviderFields({ provider }: { provider: Exclude<Provider, 'googleDrive' | 'terabox'> }) {
   if (provider === 'mega') return <>
     {field('Email', 'email', 'email', 254)}
     {field('MEGA password', 'password', 'password')}
     <details><summary>Use a different folder</summary><label className="field">MEGA folder
       <input name="folder" placeholder="BlackboxStore" maxLength={180} pattern="[A-Za-z0-9_/-]+" />
     </label></details>
-  </>;
-  if (provider === 'terabox') return <>
-    {field('AppKey', 'clientId')}
-    {field('SecretKey', 'clientSecret', 'password')}
-    {field('PrivateSecret', 'privateSecret', 'password')}
-    {field('Assigned application folder', 'appFolder')}
   </>;
   if (provider === 'telegramBot') return <>
     <p className="muted">Use a dedicated bot from BotFather. Send documents in a private chat and choose their storage priority.</p>
@@ -103,8 +97,6 @@ export function AccountConnections({ onLogout }: { onLogout: () => void }) {
   const [provider, setProvider] = useState<Provider>('googleDrive');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [teraOptions, setTeraOptions] = useState(false);
-  const [teraMethod, setTeraMethod] = useState<'web' | 'qr' | null>(null);
   const pending = state?.flow?.status === 'pending';
   useEffect(() => {
     const controller = new AbortController();
@@ -140,11 +132,6 @@ export function AccountConnections({ onLogout }: { onLogout: () => void }) {
     void start(input, form);
   }
 
-  function chooseTeraMethod(method: 'web' | 'qr') {
-    setTeraMethod(method);
-    if (state?.teraboxReady) void start({ method });
-  }
-
   function reply(event: FormEvent<HTMLFormElement>, id: string) {
     event.preventDefault();
     const form = event.currentTarget;
@@ -172,20 +159,36 @@ export function AccountConnections({ onLogout }: { onLogout: () => void }) {
     catch (failure) { setError((failure as Error).message); }
   }
 
+  async function disconnectGoogle() {
+    if (!window.confirm('Disconnect Google Drive? Files stored there remain in your account. Reconnect the same account to access them through Blackbox.')) return;
+    setBusy(true);
+    setError('');
+    try {
+      setState(await api<Connections>('/connections/google', { method: 'DELETE' }));
+    } catch (failure) {
+      setError((failure as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const flow = state?.flow;
   const step = flow?.step;
   const connectLabel = (state?.providers[provider] === 'off' ? 'Connect ' : 'Reconnect ') + providers[provider];
-  const setupForm = provider !== 'googleDrive' && <form key={provider} className="settings-form" onSubmit={startForm}>
+  const setupForm = provider !== 'googleDrive' && provider !== 'terabox' && <form key={provider} className="settings-form" onSubmit={startForm}>
     <ProviderFields provider={provider} />
-    {provider === 'terabox' && teraMethod && <input type="hidden" name="method" value={teraMethod} />}
     <button className="primary" disabled={busy}>{busy ? 'Starting connection' : connectLabel}</button>
   </form>;
+  const teraMethods = <div className="connection-methods" aria-label="TeraBox sign-in methods">
+    <button type="button" className="primary" disabled={busy} onClick={() => void start({ method: 'web' })}>Sign in on TeraBox</button>
+    <button type="button" disabled={busy} onClick={() => void start({ method: 'qr' })}>Scan a QR code</button>
+  </div>;
   return <SettingsPage page="connections" title="Account connections" onLogout={onLogout}>
     {error && <p className="error" role="alert">{error}</p>}
     {state ? <>
       <div className="provider-options">
         {providerKeys.map((key) => <button type="button" key={key} disabled={pending || busy}
-          aria-pressed={provider === key} onClick={() => { setProvider(key); setTeraOptions(false); setTeraMethod(null); }}>
+          aria-pressed={provider === key} onClick={() => setProvider(key)}>
           <strong>{providers[key]}</strong><small>{statusLabels[state.providers[key]]}</small>
         </button>)}
       </div>
@@ -202,26 +205,31 @@ export function AccountConnections({ onLogout }: { onLogout: () => void }) {
         <button type="button" onClick={() => void cancel()}>Cancel connection</button>
       </section> : <section className="settings-panel">
         {flow?.status === 'failed' && <p className="error" role="alert">{flow.error}</p>}
-        {flow?.status === 'connected' && flow.provider !== 'googleDrive' && <p role="status">{providers[flow.provider]} connected.</p>}
+        {flow?.status === 'connected' && flow.provider !== 'googleDrive' && flow.provider !== 'mega' && flow.provider !== 'terabox'
+          && <p role="status">{providers[flow.provider]} connected.</p>}
         <h2>{providers[provider]}</h2>
         {(provider === 'telegram' || provider === 'telegramBot') && <a href="/connections/telegram-help">Telegram setup instructions</a>}
         {provider === 'telegramBot' && state.telegramBotUsername && <a href={'https://t.me/' + state.telegramBotUsername}
           target="_blank" rel="noopener noreferrer">Open @{state.telegramBotUsername} in Telegram</a>}
         {provider === 'googleDrive' ? (
-          state.providers.googleDrive === 'connected' ? <p role="status">Connected</p>
+          state.providers.googleDrive === 'connected' || state.providers.googleDrive === 'retrying' ? <>
+            <p role="status">{statusLabels[state.providers.googleDrive]}</p>
+            <button type="button" disabled={busy} onClick={() => void disconnectGoogle()}>Disconnect Google Drive</button>
+          </>
             : state.googleReady ? <button type="button" className="primary" disabled={busy}
               onClick={() => void start({})}>{busy ? 'Opening Google…'
                 : state.providers.googleDrive === 'off' ? 'Connect Google Drive' : 'Reconnect Google Drive'}</button>
               : <p className="muted">Google Drive sign-in is unavailable until the site administrator enables it.</p>
-        ) : provider === 'terabox' ? <>
-          {!teraOptions ? <button type="button" className="primary" onClick={() => setTeraOptions(true)}>{connectLabel}</button>
-            : <><div className="connection-methods" aria-label="TeraBox sign-in methods">
-              <button type="button" disabled={busy} aria-pressed={teraMethod === 'web'} onClick={() => chooseTeraMethod('web')}>Sign in on TeraBox</button>
-              <button type="button" disabled={busy} aria-pressed={teraMethod === 'qr'} onClick={() => chooseTeraMethod('qr')}>Scan a QR code</button>
-            </div>{teraMethod && !state.teraboxReady && <><p className="muted">Create a
-              {' '}<a href="https://www.terabox.com/integrations" target="_blank" rel="noopener noreferrer">TeraBox Open Platform app</a>
-              {' '}once to enable both sign-in methods.</p>{setupForm}</>}</>}
-        </> : setupForm}
+        ) : provider === 'mega' && (state.providers.mega === 'connected' || state.providers.mega === 'retrying') ? <>
+          <p role="status">{statusLabels[state.providers.mega]}</p>
+          <details><summary>Reconnect MEGA</summary>{setupForm}</details>
+        </> : provider === 'terabox' ? (
+          !state.teraboxReady ? <p className="muted">TeraBox sign-in is unavailable until the site administrator enables it.</p>
+            : state.providers.terabox === 'connected' || state.providers.terabox === 'retrying' ? <>
+              <p role="status">{statusLabels[state.providers.terabox]}</p>
+              <details><summary>Reconnect TeraBox</summary>{teraMethods}</details>
+            </> : teraMethods
+        ) : setupForm}
       </section>}
     </> : !error && <p role="status">Loading connections</p>}
   </SettingsPage>;

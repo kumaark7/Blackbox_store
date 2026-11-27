@@ -134,9 +134,9 @@ export class CloudReplicas {
     try { await this.running; } finally { await this.provider?.close?.(); }
   }
 
-  async replaceConnection(install: () => Promise<CloudProvider>) {
+  async replaceConnection(install: () => Promise<CloudProvider | null>) {
     if (this.connecting || this.busy.size || this.shutdown.signal.aborted) {
-      throw new DriveError(409, 'Wait for the current storage operation to finish, then reconnect.');
+      throw new DriveError(409, 'Wait for the current storage operation to finish before changing the connection.');
     }
     this.connecting = true;
     try {
@@ -145,6 +145,10 @@ export class CloudReplicas {
       const previous = this.provider;
       this.provider = replacement;
       this.quotaCache = undefined;
+      if (!replacement) {
+        clearInterval(this.timer);
+        this.timer = undefined;
+      }
       await previous?.close?.().catch(() => undefined);
     } finally {
       this.connecting = false;
@@ -230,7 +234,7 @@ export class CloudReplicas {
   async download(id: string, object: StoredObject, cloudOnly = false) {
     const replica = this.getReplica(id);
     const provider = this.provider;
-    if (!provider || !replica?.remoteId || !replica.confirmedAt) return null;
+    if (!provider || this.connecting || !replica?.remoteId || !replica.confirmedAt) return null;
     const remoteId = replica.remoteId;
     const signal = this.shutdown.signal;
     try {

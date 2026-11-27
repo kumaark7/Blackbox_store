@@ -10,10 +10,21 @@ import { openDatabase } from '../src/database/open.ts';
 import { Drive } from '../src/files/drive.ts';
 import { ROOT_ID } from '../src/files/index.ts';
 import { connectMega, MegaStorage } from '../src/storage/mega-rclone.ts';
+import { rcloneOperationError } from '../src/storage/rclone-rc.ts';
 import type { RcloneControl } from '../src/storage/rclone-rc.ts';
 
 const config = { remote: 'test-mega:BlackboxStore', executable: 'rclone' };
 const marker = config.remote + '/.blackbox-store-id';
+
+test('MEGA exposes known account errors without leaking rclone error details', async () => {
+  const connectionError = (error: string) =>
+    rcloneOperationError(Response.json({ error }, { status: 500 }), 'operations/mkdir');
+  assert.match((await connectionError("couldn't login: User blocked")).message, /account is blocked/);
+  assert.match((await connectionError("couldn't login: Multi-factor authentication required")).message, /two-factor authentication code/);
+  const fallback = await connectionError('could not open /fixture/private/folder');
+  assert.match(fallback.message, /could not sign in to MEGA or open the selected folder/);
+  assert.doesNotMatch(fallback.message, /fixture\/private/);
+});
 
 function rcloneFixture() {
   const files = new Map<string, Buffer>();

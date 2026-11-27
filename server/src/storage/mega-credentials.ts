@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { DriveError } from '../errors.ts';
 import { readSealedJson, writeSealedJson } from './sealed-json.ts';
 
 const credentialId = '00000000-0000-0000-0000-000000000004';
@@ -28,7 +29,7 @@ export function saveMegaCredentials(dir: string, key: Buffer, credentials: MegaC
 
 export function obscureMegaPassword(executable: string, password: string, signal: AbortSignal) {
   return new Promise<string>((resolve, reject) => {
-    const unavailable = () => reject(new Error('MEGA sign-in needs rclone on the server and valid credentials.'));
+    const unavailable = () => reject(new DriveError(503, 'Blackbox could not prepare the MEGA password with rclone. Check the rclone installation on the server.'));
     const child = spawn(executable, ['obscure', '-'], { windowsHide: true, signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
       stdio: ['pipe', 'pipe', 'ignore'] });
     let output = '';
@@ -36,7 +37,13 @@ export function obscureMegaPassword(executable: string, password: string, signal
       output += chunk;
       if (output.length > 1602) child.kill();
     });
-    child.on('error', unavailable);
+    child.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') {
+        reject(new DriveError(503, 'The Blackbox service could not find rclone. Install it on the server or set MEGA_RCLONE_EXECUTABLE to its full path.'));
+      } else {
+        unavailable();
+      }
+    });
     child.stdin.on('error', unavailable);
     child.on('close', (status) => {
       if (status === 0 && /^[a-zA-Z0-9_-]{22,1600}$/.test(output.trim())) resolve(output.trim());

@@ -118,8 +118,8 @@ export class Drive {
     }
   }
 
-  replaceCloudConnection(replica: CloudReplicas, install: () => Promise<CloudProvider>) {
-    if (this.activePurges.size) throw new DriveError(409, 'Wait for permanent deletion to finish before reconnecting.');
+  replaceCloudConnection(replica: CloudReplicas, install: () => Promise<CloudProvider | null>) {
+    if (this.activePurges.size) throw new DriveError(409, 'Wait for permanent deletion to finish before changing the connection.');
     return replica.replaceConnection(install);
   }
 
