@@ -53,6 +53,8 @@ a.primary { border: 1px solid #c1aeff70; display: inline-flex; align-items: cent
 .sidebar .brand { margin: 0 2px; }
 .sidebar nav, .sidebar-bottom { gap: 7px; }
 .brand { gap: 12px; min-width: 0; font-size: clamp(1.02rem, 1.4vw, 1.42rem); }
+a.brand { color: inherit; border-radius: 10px; }
+a.brand:hover { color: #dbe9ff; text-decoration: none; }
 .brand strong, .brand small { display: block; }
 .brand small { color: var(--muted); font-size: .72em; font-weight: 450; letter-spacing: 0; margin-top: 4px; }
 .brand-mark {
@@ -96,8 +98,50 @@ a.primary { border: 1px solid #c1aeff70; display: inline-flex; align-items: cent
 .file-panel, .transfers, .settings-panel { background-color: var(--panel); }
 .file-panel > .panel-top, .transfers header { padding: 13px 16px; }
 .settings-panel { padding: clamp(16px, 2vw, 24px); }
-.provider-options button { min-height: 65px; background: linear-gradient(145deg, #202944, #151c32); }
-.provider-options button[aria-pressed='true'] { color: #fff; background: linear-gradient(145deg, #393060, #22284a); border-color: #ad92ff; }
+.provider-options { grid-template-columns: repeat(auto-fit, minmax(min(184px, 100%), 1fr)); gap: 10px; }
+[data-brand='google-drive'] { --connection-accent: #65a9ff; }
+[data-brand='mega'] { --connection-accent: #fa7a89; }
+[data-brand='terabox'] { --connection-accent: #58a8ff; }
+[data-brand='telegram'] { --connection-accent: #58cce9; }
+.provider-options button {
+  grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px;
+  min-height: 79px; border-radius: 14px; padding: 10px;
+  background: linear-gradient(145deg, #202944, #151c32);
+}
+.provider-options button:not(:disabled):hover {
+  border-color: var(--connection-accent);
+  box-shadow: 0 4px 16px #03071688;
+}
+.provider-options button[aria-pressed='true'] {
+  color: #fff; border-color: var(--connection-accent);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--connection-accent) 19%, #222742), #171e35);
+  box-shadow: inset 0 1px 0 #cedaff2e, 0 4px 16px #03071677;
+}
+.connection-logo {
+  display: grid; place-items: center; flex: none; width: 42px; height: 42px; border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--connection-accent) 40%, #232b46);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--connection-accent) 16%, #1b233c), #141a2e);
+}
+.connection-choice-text { display: grid; justify-items: start; min-width: 0; gap: 5px; }
+.connection-choice-text strong { line-height: 1.2; }
+.provider-options .provider-status { color: #99f2d6; }
+.provider-options .provider-status[data-status='off'] { color: #c0cbe0; background: #313c5680; }
+.provider-options .provider-status[data-status='off'] i { background: #94a3b8; }
+.provider-options .provider-status[data-status='reconnect'] { color: #ffc1cd; background: #642d4b80; }
+.provider-options .provider-status[data-status='reconnect'] i { background: #fb7185; }
+.provider-options .provider-status[data-status='retrying'] { color: #ffda91; }
+.connection-heading { display: flex; align-items: center; gap: 10px; }
+.connection-methods button, .connection-reconnect summary { min-height: 44px; }
+.connection-methods button svg, .connection-reconnect summary svg { flex: none; }
+.connection-disconnect { border-color: #92536b; background: linear-gradient(145deg, #37233a, #201a30); color: #ffd4dd; }
+.connection-disconnect:not(:disabled):hover { border-color: #ee91aa; background: #482744; }
+.connection-reconnect summary {
+  display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: #1a2237; cursor: pointer; list-style: none;
+}
+.connection-reconnect summary::-webkit-details-marker { display: none; }
+.connection-reconnect summary:hover { border-color: var(--accent); }
+.connection-reconnect[open] summary { margin-bottom: 12px; }
 .file-sources a { border-radius: 9px; }
 .file-sources a[aria-current='page'] { background: linear-gradient(145deg, #42347a, #252548); border-color: #8f78dd; color: #fff; }
 .file-tile { background: linear-gradient(145deg, #253153b8, #151d32); border-radius: 13px; border-color: #414c70; transition: border-color .2s, box-shadow .2s; }

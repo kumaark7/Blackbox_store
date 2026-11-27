@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
+import { Link2, QrCode, RefreshCw, Unlink2 } from 'lucide-react';
 import { api } from './api';
-import type { CloudStatus } from './api';
+import type { CloudProvider, CloudStatus } from './api';
+import { providerLogos } from './providerLogos';
 import { Workspace } from './Workspace';
 
 const providers = {
@@ -9,6 +11,16 @@ const providers = {
   telegram: 'Telegram Backup Channel', telegramBot: 'Telegram Upload Bot',
 } as const;
 type Provider = keyof typeof providers;
+const providerBrands: Record<Provider, CloudProvider> = {
+  googleDrive: 'google-drive', mega: 'mega', terabox: 'terabox', telegram: 'telegram', telegramBot: 'telegram',
+};
+
+function ConnectionLogo({ provider }: { provider: Provider }) {
+  const brand = providerBrands[provider];
+  return <span className="connection-logo" data-brand={brand}>
+    <img className="provider-logo" src={providerLogos[brand]} alt="" width={27} height={27} />
+  </span>;
+}
 type Step = { kind: 'google'; url: string } | { kind: 'qr' } | { kind: 'input'; id: string; message: string }
   | { kind: 'teraboxWeb'; id: string; url: string };
 type Connections = {
@@ -180,23 +192,33 @@ export function AccountConnections({ onLogout }: { onLogout: () => void }) {
   const connectLabel = (state?.providers[provider] === 'off' ? 'Connect ' : 'Reconnect ') + providers[provider];
   const setupForm = provider !== 'googleDrive' && provider !== 'terabox' && <form key={provider} className="settings-form" onSubmit={startForm}>
     <ProviderFields provider={provider} />
-    <button className="primary" disabled={busy}>{busy ? 'Starting connection' : connectLabel}</button>
+    <button className="primary" disabled={busy}><Link2 size={17} aria-hidden="true" /> {busy ? 'Starting connection' : connectLabel}</button>
   </form>;
   const teraMethods = <div className="connection-methods" aria-label="TeraBox sign-in methods">
-    <button type="button" className="primary" disabled={busy} onClick={() => void start({ method: 'web' })}>Sign in on TeraBox</button>
-    <button type="button" disabled={busy} onClick={() => void start({ method: 'qr' })}>Scan a QR code</button>
+    <button type="button" className="primary" disabled={busy} onClick={() => void start({ method: 'web' })}>
+      <Link2 size={17} aria-hidden="true" /> Sign in on TeraBox
+    </button>
+    <button type="button" disabled={busy} onClick={() => void start({ method: 'qr' })}>
+      <QrCode size={17} aria-hidden="true" /> Scan a QR code
+    </button>
   </div>;
   return <SettingsPage page="connections" title="Account connections" onLogout={onLogout}>
     {error && <p className="error" role="alert">{error}</p>}
     {state ? <>
       <div className="provider-options">
-        {providerKeys.map((key) => <button type="button" key={key} disabled={pending || busy}
+        {providerKeys.map((key) => <button type="button" key={key} disabled={pending || busy} data-brand={providerBrands[key]}
           aria-pressed={provider === key} onClick={() => setProvider(key)}>
-          <strong>{providers[key]}</strong><small>{statusLabels[state.providers[key]]}</small>
+          <ConnectionLogo provider={key} />
+          <span className="connection-choice-text">
+            <strong>{providers[key]}</strong>
+            <small className="provider-status" data-status={state.providers[key]}>
+              <i aria-hidden="true" /> {statusLabels[state.providers[key]]}
+            </small>
+          </span>
         </button>)}
       </div>
       {pending && flow ? <section className="settings-panel">
-        <h2>Connect {providers[flow.provider]}</h2>
+        <h2 className="connection-heading"><ConnectionLogo provider={flow.provider} /> Connect {providers[flow.provider]}</h2>
         {step?.kind === 'google' ? <a href={step.url}>Continue with Google</a>
           : step?.kind === 'teraboxWeb' ? <TeraBoxFrame key={step.id} step={step} onCode={completeStep} />
           : step?.kind === 'qr' ? <><p>Scan this QR code with the TeraBox mobile app.</p>
@@ -210,7 +232,7 @@ export function AccountConnections({ onLogout }: { onLogout: () => void }) {
         {flow?.status === 'failed' && <p className="error" role="alert">{flow.error}</p>}
         {flow?.status === 'connected' && flow.provider !== 'googleDrive' && flow.provider !== 'mega' && flow.provider !== 'terabox'
           && <p role="status">{providers[flow.provider]} connected.</p>}
-        <h2>{providers[provider]}</h2>
+        <h2 className="connection-heading"><ConnectionLogo provider={provider} /> {providers[provider]}</h2>
         {(provider === 'telegram' || provider === 'telegramBot') && <a href="/connections/telegram-help"
           target="_blank" rel="noopener noreferrer">Telegram setup instructions (opens in a new tab)</a>}
         {provider === 'telegramBot' && state.telegramBotUsername && <a href={'https://t.me/' + state.telegramBotUsername}
@@ -219,8 +241,12 @@ export function AccountConnections({ onLogout }: { onLogout: () => void }) {
           state.providers.googleDrive === 'connected' || state.providers.googleDrive === 'retrying' ? <>
             <p role="status">{statusLabels[state.providers.googleDrive]}</p>
             <div className="connection-methods">
-              {state.googleReady && <button type="button" disabled={busy} onClick={() => void start({})}>Reconnect Google Drive</button>}
-              <button type="button" disabled={busy} onClick={() => void disconnectGoogle()}>Disconnect Google Drive</button>
+              {state.googleReady && <button type="button" className="primary" disabled={busy} onClick={() => void start({})}>
+                <RefreshCw size={17} aria-hidden="true" /> Reconnect Google Drive
+              </button>}
+              <button type="button" className="connection-disconnect" disabled={busy} onClick={() => void disconnectGoogle()}>
+                <Unlink2 size={17} aria-hidden="true" /> Disconnect Google Drive
+              </button>
             </div>
           </>
             : state.googleReady ? <button type="button" className="primary" disabled={busy}
@@ -229,12 +255,12 @@ export function AccountConnections({ onLogout }: { onLogout: () => void }) {
               : <p className="muted">Google Drive sign-in is unavailable until the site administrator enables it.</p>
         ) : provider === 'mega' && (state.providers.mega === 'connected' || state.providers.mega === 'retrying') ? <>
           <p role="status">{statusLabels[state.providers.mega]}</p>
-          <details><summary>Reconnect MEGA</summary>{setupForm}</details>
+          <details className="connection-reconnect"><summary><RefreshCw size={17} aria-hidden="true" /> Reconnect MEGA</summary>{setupForm}</details>
         </> : provider === 'terabox' ? (
           !state.teraboxReady ? <p className="muted">TeraBox sign-in is unavailable until the site administrator enables it.</p>
             : state.providers.terabox === 'connected' || state.providers.terabox === 'retrying' ? <>
               <p role="status">{statusLabels[state.providers.terabox]}</p>
-              <details><summary>Reconnect TeraBox</summary>{teraMethods}</details>
+              <details className="connection-reconnect"><summary><RefreshCw size={17} aria-hidden="true" /> Reconnect TeraBox</summary>{teraMethods}</details>
             </> : teraMethods
         ) : setupForm}
       </section>}

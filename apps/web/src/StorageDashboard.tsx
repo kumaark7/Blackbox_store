@@ -8,10 +8,7 @@ import type { CloudProvider, Importance, StorageUsage } from './api';
 import { formatSize } from './formatSize';
 import { storageOverview } from './storageOverview';
 import { Workspace } from './Workspace';
-import googleLogo from './providers/google-drive.svg?no-inline';
-import megaLogo from './providers/mega.svg?no-inline';
-import teraboxLogo from './providers/terabox.svg?no-inline';
-import telegramLogo from './providers/telegram.svg?no-inline';
+import { providerLogos } from './providerLogos';
 
 const number = new Intl.NumberFormat();
 const priorityIcons = { 'highly-important': Crown, important: Star, backup: ShieldCheck };
@@ -86,13 +83,6 @@ function PriorityBreakdown({ usage }: { usage: StorageUsage }) {
     <p className="tracked-caption">Files tracked by Blackbox</p>
   </section>;
 }
-
-const providerLogos: Record<CloudProvider, string> = {
-  'google-drive': googleLogo,
-  mega: megaLogo,
-  terabox: teraboxLogo,
-  telegram: telegramLogo,
-};
 
 function ConnectedAccounts({ accounts }: { accounts: ReturnType<typeof storageOverview>['accounts'] }) {
   return <section aria-labelledby="connected-accounts-title">

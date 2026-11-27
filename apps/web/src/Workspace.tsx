@@ -49,7 +49,7 @@ export function Workspace({ children, filesNavigation, storage, page, usage, tra
   const current = page === 'account' && hash === '#security' ? 'security' : page;
   const dashboard = !filesNavigation && !page;
   const menu = <>
-    <Brand />
+    <Brand href="/" />
     <nav aria-label="Drive navigation" onClick={(event) => {
       if ((event.target as Element).closest('a, button') && drawer.current?.open) drawer.current.close();
     }}>
@@ -82,7 +82,7 @@ export function Workspace({ children, filesNavigation, storage, page, usage, tra
 
   return <div className="workspace">
     <header className="mobile-bar">
-      <Brand />
+      <Brand href="/" />
       <button className="icon" aria-label="Open navigation" aria-controls="navigation-drawer" aria-expanded={open}
         onClick={() => { drawer.current?.showModal(); setOpen(true); }}><Menu size={23} /></button>
     </header>
