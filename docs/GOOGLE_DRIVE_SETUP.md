@@ -36,3 +36,5 @@ For a hosted HTTPS instance, create a **Web application** OAuth client in Google
 
 In **Account connections**, select **Google Drive**, then click **Connect Google Drive**. Sign in and approve access on Google's page. Google returns you to Blackbox, where Google Drive shows **Connected**. An existing replica binding requires the original Google account and OAuth client, which Blackbox reuses for reconnection when saved.
 
+To browse and upload through the **Google Drive** tab in **My files**, add `https://www.googleapis.com/auth/drive` under **Data Access** in Google Cloud. Keep `drive.appdata` for existing encrypted files. In Blackbox, choose **Reconnect Google Drive** and authorize the new access. The full Drive scope is restricted by Google and may require additional verification for public use. [Google Drive OAuth scopes](https://developers.google.com/workspace/drive/api/guides/api-specific-auth)
+

@@ -7,7 +7,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { Readable } from 'node:stream';
 import { buffer } from 'node:stream/consumers';
 import { DriveError } from '../errors.ts';
-import type { Ciphertext, CloudProvider } from './adapter.ts';
+import type { Ciphertext, CloudProvider, NativeCloud } from './adapter.ts';
 import { reportedQuota } from './quota.ts';
 import { rcloneControl, rcloneUnavailable } from './rclone-rc.ts';
 import type { RcloneControl } from './rclone-rc.ts';
@@ -71,9 +71,9 @@ async function statFile(control: RcloneControl, fs: string, remote: string, sign
   return { size: item.Size! };
 }
 
-async function sendFile(control: RcloneControl, remote: string, name: string, path: string, signal: AbortSignal) {
+async function sendFile(control: RcloneControl, remote: string, name: string, path: string, signal: AbortSignal, immutable = false) {
   await control.call('operations/copyfile', { srcFs: localFs(dirname(path)), srcRemote: basename(path),
-    dstFs: remote, dstRemote: name }, signal);
+    dstFs: remote, dstRemote: name, ...(immutable ? { immutable: 'true' } : {}) }, signal);
 }
 
 function receiveFile(control: RcloneControl, remote: string, name: string, signal: AbortSignal) {
@@ -103,6 +103,11 @@ export function openMega(db: DatabaseSync, config: MegaConfig | undefined) {
 }
 
 export class MegaStorage implements CloudProvider {
+  readonly native: NativeCloud = {
+    listFiles: (parent, _cursor, signal) => this.listNative(parent, signal),
+    downloadFile: (id, signal) => this.downloadNative(id, signal),
+    uploadFile: (parent, name, _mime, path, _bytes, signal) => this.uploadNative(parent, name, path, signal),
+  };
   private readonly remote: string;
   private readonly binding: string;
   private readonly control: RcloneControl;
@@ -122,6 +127,48 @@ export class MegaStorage implements CloudProvider {
     if (!await matchesMarker(this.control, this.remote, this.binding, signal)) {
       throw new DriveError(503, 'Reconnect the original MEGA folder before continuing.');
     }
+  }
+
+  private nativePath(path: string, allowRoot = false) {
+    if (path === '' && allowRoot) return '';
+    if (/[\\\p{Cc}]/u.test(path) || path.split('/').some((part) => !part || part === '.' || part === '..')) {
+      throw new DriveError(400, 'Invalid MEGA path.');
+    }
+    return path;
+  }
+
+  private get rootRemote() {
+    return this.remote.split(':')[0] + ':';
+  }
+
+  private async listNative(parent: string, signal: AbortSignal) {
+    const path = this.nativePath(parent, true);
+    await this.checkFolder(signal);
+    const result = await this.control.call('operations/list', { fs: this.rootRemote, remote: path }, signal) as
+      { list?: { Name: string; IsDir: boolean; Size: number }[] };
+    if (!Array.isArray(result?.list)) throw rcloneUnavailable();
+    const items = result.list.map(({ Name: name, IsDir: folder, Size: size }) => ({
+      id: path ? path + '/' + name : name, name, folder, size: folder || size < 0 ? null : size,
+    }));
+    items.sort((a, b) => Number(b.folder) - Number(a.folder) || a.name.localeCompare(b.name));
+    return { items };
+  }
+
+  private async downloadNative(id: string, signal: AbortSignal) {
+    const path = this.nativePath(id);
+    await this.checkFolder(signal);
+    if (!await statFile(this.control, this.rootRemote, path, signal)) throw new DriveError(404, 'MEGA file not found.');
+    return { name: path.split('/').at(-1)!, stream: receiveFile(this.control, this.rootRemote, path, signal) };
+  }
+
+  private async uploadNative(parent: string, name: string, source: string, signal: AbortSignal) {
+    const folder = this.nativePath(parent, true);
+    const destination = this.nativePath(folder ? folder + '/' + name : name);
+    await this.checkFolder(signal);
+    const existing = await this.control.call('operations/stat', { fs: this.rootRemote, remote: destination }, signal) as { item?: unknown };
+    if (existing?.item) throw new DriveError(409, 'A file or folder with this name already exists in MEGA.');
+    if (existing?.item !== null) throw rcloneUnavailable();
+    await sendFile(this.control, this.rootRemote, destination, source, signal, true);
   }
 
   async quota(signal: AbortSignal) {

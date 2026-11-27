@@ -125,8 +125,15 @@ test('previews require authentication and recognized content while downloads rem
   const pdf = Buffer.from('%PDF-1.7\n%%EOF');
   const imageEntry = await upload('photo.PNG', png);
   const pdfEntry = await upload('report.pdf', pdf);
+  const videoEntry = await upload('clip.mp4', Buffer.from('invalid video fixture'));
   assert.equal(imageEntry.preview, 'image');
   assert.equal(pdfEntry.preview, 'pdf');
+  assert.equal(imageEntry.thumbnail, 'image');
+  assert.equal(videoEntry.thumbnail, 'video');
+  assert.equal(pdfEntry.thumbnail, null);
+  assert.equal((await app.inject('/api/files/' + imageEntry.id + '/thumbnail')).statusCode, 401);
+  assert.equal((await app.inject({ url: '/api/files/' + videoEntry.id + '/thumbnail', headers })).statusCode, 404);
+  assert.equal((await app.inject({ url: '/api/files/' + pdfEntry.id + '/thumbnail', headers })).statusCode, 404);
 
   for (const [id, type, bytes] of [[imageEntry.id, 'image/png', png], [pdfEntry.id, 'application/pdf', pdf]] as const) {
     const path = '/api/files/' + id;
@@ -155,6 +162,7 @@ test('previews require authentication and recognized content while downloads rem
   assert.equal((await app.inject({ url: '/api/files/' + svg.id + '/preview', headers })).statusCode, 415);
   assert.equal((await app.inject({ url: '/api/entries/' + imageEntry.id, method: 'DELETE', headers })).statusCode, 204);
   assert.equal((await app.inject({ url: '/api/files/' + imageEntry.id + '/preview', headers })).statusCode, 404);
+  assert.equal((await app.inject({ url: '/api/files/' + imageEntry.id + '/thumbnail', headers })).statusCode, 404);
   assert.equal(previewKind('big.pdf', 20 * 1024 * 1024 + 1), null);
   assert.throws(() => requirePreviewType('big.pdf', 20 * 1024 * 1024 + 1), { status: 413 });
 });
@@ -220,19 +228,38 @@ test('Google connects from the site with a session-bound OAuth flow and activate
   assert.equal(authorization.origin, 'https://accounts.google.com');
   assert.equal(authorization.searchParams.get('client_id'), clientId);
   assert.equal(authorization.searchParams.get('redirect_uri'), origin + callback);
+  assert.ok(authorization.searchParams.get('scope')?.split(' ').includes('https://www.googleapis.com/auth/drive'));
   const state = authorization.searchParams.get('state');
   const otherFlow = (await app.inject({ url, headers: { cookie: other.name + '=' + other.value } })).json();
   assert.equal(otherFlow.flow, null);
   assert.equal((await app.inject(callback + '?state=' + 'x'.repeat(32) + '&code=ignored')).statusCode, 400);
+  const nativeFile = Buffer.from('original contents');
   const mock = t.mock.method(globalThis, 'fetch', async (input: string, init: RequestInit) => {
     const endpoint = new URL(input);
     if (endpoint.hostname === 'oauth2.googleapis.com') {
       const params = init.body as URLSearchParams;
-      assert.equal(params.get('code'), 'fixture-auth-code');
       assert.equal(params.get('client_secret'), clientSecret);
-      assert.equal(createHash('sha256').update(params.get('code_verifier')!).digest('base64url'),
-        authorization.searchParams.get('code_challenge'));
+      if (params.get('grant_type') === 'refresh_token') {
+        assert.equal(params.get('refresh_token'), 'fixture-refresh');
+      } else {
+        assert.equal(params.get('code'), 'fixture-auth-code');
+        assert.equal(createHash('sha256').update(params.get('code_verifier')!).digest('base64url'),
+          authorization.searchParams.get('code_challenge'));
+      }
       return Response.json({ access_token: 'fixture-access', refresh_token: 'fixture-refresh', expires_in: 3600 });
+    }
+    if (endpoint.pathname === '/drive/v3/files') {
+      assert.equal(endpoint.searchParams.get('spaces'), 'drive');
+      return Response.json({ files: [{ id: 'folder-a', name: 'Existing folder', mimeType: 'application/vnd.google-apps.folder' }] });
+    }
+    if (endpoint.pathname === '/upload/drive/v3/files') {
+      if (init.method === 'POST') {
+        assert.deepEqual(JSON.parse(String(init.body)), { name: 'original.txt', parents: ['folder-a'], mimeType: 'text/plain' });
+        return new Response(null, { headers: { Location: 'https://www.googleapis.com/upload/drive/v3/files?upload_id=test' } });
+      }
+      assert.equal(init.method, 'PUT');
+      assert.deepEqual(Buffer.from(await new Response(init.body).arrayBuffer()), nativeFile);
+      return Response.json({ id: 'new-file' });
     }
     assert.equal(endpoint.pathname, '/drive/v3/about');
     return Response.json({ user: { permissionId: 'fixture-account' } });
@@ -245,6 +272,17 @@ test('Google connects from the site with a session-bound OAuth flow and activate
   assert.equal(JSON.stringify(connected).includes('fixture-refresh'), false);
   assert.equal(mock.mock.callCount(), 2);
   assert.equal((await app.inject(callback + '?state=' + state + '&code=fixture-auth-code')).statusCode, 400);
+
+  const nativeUrl = '/api/cloud/google';
+  assert.equal((await app.inject(nativeUrl + '/files')).statusCode, 401);
+  const nativeFiles = await app.inject({ url: nativeUrl + '/files', headers });
+  assert.equal(nativeFiles.statusCode, 200, nativeFiles.body);
+  assert.ok(nativeFiles.json().items.some((item: { name: string }) => item.name === 'Existing folder'));
+  const nativeUpload = await app.inject({ method: 'POST', url: nativeUrl + '/uploads?parent=folder-a&name=original.txt&mime=text%2Fplain',
+    headers: { ...headers, 'content-type': 'application/octet-stream' }, payload: nativeFile });
+  assert.equal(nativeUpload.statusCode, 204, nativeUpload.body);
+  assert.deepEqual(await readdir(join(dataDir, 'objects')), []);
+  const providerCalls = mock.mock.callCount();
 
   const disconnect = { method: 'DELETE', url: url + '/google' } as const;
   assert.equal((await app.inject({ ...disconnect, headers: { origin } })).statusCode, 401);
@@ -261,7 +299,7 @@ test('Google connects from the site with a session-bound OAuth flow and activate
   } finally {
     db.close();
   }
-  assert.equal(mock.mock.callCount(), 2);
+  assert.equal(mock.mock.callCount(), providerCalls);
 });
 
 test('TeraBox offers private QR and browser consent and remembers the verified application', async (t) => {

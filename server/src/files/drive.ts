@@ -1,10 +1,12 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { createWriteStream } from 'node:fs';
 import { join } from 'node:path';
-import { mkdir, opendir } from 'node:fs/promises';
+import { mkdir, opendir, rm } from 'node:fs/promises';
 import type { DatabaseSync } from 'node:sqlite';
-import { addAbortSignal } from 'node:stream';
+import { addAbortSignal, Transform } from 'node:stream';
 import type { Readable } from 'node:stream';
-import type { CloudProvider, StoredObject } from '../storage/adapter.ts';
+import { pipeline } from 'node:stream/promises';
+import type { CloudProvider, NativeCloud, StoredObject } from '../storage/adapter.ts';
 import { CloudReplicas } from '../storage/cloud-replicas.ts';
 import { DriveError, TeraboxCleanupRequired } from '../errors.ts';
 import { lockDrive, openDatabase } from '../database/open.ts';
@@ -86,6 +88,10 @@ export class Drive {
       const discardStage = db.prepare(`SELECT 1 FROM nodes WHERE object_key = ? AND
         ((cloud_only = 1 AND state != 'pending') OR (state = 'pending' AND id NOT IN (SELECT node_id FROM transfers)))`);
       for await (const entry of await opendir(objects)) {
+        if (entry.isFile() && /^[a-f0-9-]{36}\.native-upload$/.test(entry.name)) {
+          await rm(join(objects, entry.name), { force: true });
+          continue;
+        }
         const key = /^([a-f0-9-]{36})(?:\.part)?$/.exec(entry.name)?.[1];
         if (key && entry.isFile() && discardStage.get(key)) await storage.delete(key);
       }
@@ -127,9 +133,36 @@ export class Drive {
     const candidates = importance === 'highly-important' ? [this.googleDrive] : importance === 'important'
       ? [this.mega] : [this.terabox, this.telegram];
     const destination = candidates.find((candidate) => candidate.available());
+    if (destination && importance !== 'backup' && destination.supportsNativeFiles) {
+      const provider = importance === 'highly-important' ? 'Google Drive' : 'MEGA';
+      throw new DriveError(409, 'Open the ' + provider + ' tab in My files to upload directly to that account.');
+    }
     if (destination) return destination;
     const name = importance === 'highly-important' ? 'Google Drive' : importance === 'important' ? 'MEGA' : 'TeraBox or Telegram Backup Channel';
     throw new DriveError(409, 'Connect ' + name + ' in Account connections before uploading files with this priority.');
+  }
+
+  async uploadToCloud(cloud: NativeCloud, parent: string, name: string, mime: string,
+    getSource: () => Readable | Promise<Readable>, signal: AbortSignal) {
+    this.checkUploadSlot();
+    signal.throwIfAborted();
+    const filename = validateName(name);
+    const path = this.storage.path(randomUUID()) + '.native-upload';
+    let bytes = 0;
+    const max = this.storage.capabilities.maxObjectBytes;
+    const limit = new Transform({ transform(chunk: Buffer, _encoding, done) {
+      bytes += chunk.length;
+      if (bytes > max) done(new DriveError(413, 'The file exceeds the upload limit.'));
+      else done(null, chunk);
+    } });
+    this.activeUploads++;
+    try {
+      await pipeline(await getSource(), limit, createWriteStream(path, { flags: 'wx', mode: 0o600 }), { signal });
+      await cloud.uploadFile(parent, filename, mime, path, bytes, signal);
+      return filename;
+    } finally {
+      try { await rm(path, { force: true }); } finally { this.activeUploads--; }
+    }
   }
 
   private async deleteCloudCopies(id: string) {

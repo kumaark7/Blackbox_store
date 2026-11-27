@@ -14,6 +14,7 @@ import { DriveError, TeraboxCleanupRequired } from '../errors.ts';
 import { Drive } from '../files/drive.ts';
 import { IMPORTANCE, ROOT_ID } from '../files/index.ts';
 import { checkedPreview, requirePreviewType } from '../files/preview.ts';
+import { FileThumbnails } from '../files/thumbnail.ts';
 import { CHUNK_BYTES } from '../storage/format.ts';
 import { cloudUsage, localUsage } from '../storage/usage.ts';
 import { connectionInput, Connections } from './connections.ts';
@@ -24,6 +25,10 @@ const name = z.string().min(1).max(180);
 const importance = z.enum(IMPORTANCE);
 const destination = z.strictObject({ parentId: id.default(ROOT_ID), name });
 const uploadQuery = destination.extend({ importance });
+const cloudParams = z.strictObject({ provider: z.enum(['google', 'mega']) });
+const cloudPath = z.string().max(4096);
+const cloudUpload = z.strictObject({ parent: cloudPath.optional(), name: z.string().max(180),
+  mime: z.string().max(127).regex(/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i).optional() });
 const transferInput = uploadQuery.extend({ size: z.number().int().nonnegative(), fingerprint: z.string().regex(/^[0-9a-f]{64}$/) });
 const transferOffset = z.string().regex(/^(0|[1-9]\d*)$/).transform(Number).pipe(z.number().int().nonnegative());
 const change = z.strictObject({ parentId: id.optional(), name: name.optional(), importance: importance.optional() })
@@ -101,6 +106,7 @@ export async function buildApp(config: Config, options: { logger?: boolean } = {
       cloudOnly: config.cloudOnly });
   const auth = new OwnerAuth(drive.index.db, config.sessionSeconds);
   const connections = new Connections(drive, auth, config);
+  const thumbnails = new FileThumbnails(config.ffmpegExecutable);
   let cacheCleanup: Promise<void> | undefined;
   const cacheTimer = setInterval(() => {
     cacheCleanup ??= drive.expireCloudTransfers()
@@ -223,6 +229,28 @@ export async function buildApp(config: Config, options: { logger?: boolean } = {
           return reply.type(qr.type).send(qr.bytes);
         });
         secured.get('/entries', async (request) => drive.index.browse(listing.parse(request.query)));
+        secured.get('/cloud/:provider/files', async (request) => {
+          const { provider } = cloudParams.parse(request.params);
+          const { parent, cursor } = z.strictObject({ parent: cloudPath.optional(), cursor: z.string().max(4096).optional() }).parse(request.query);
+          const cloud = (provider === 'google' ? drive.googleDrive : drive.mega).cloudFiles();
+          return cloud.listFiles(parent ?? (provider === 'google' ? 'root' : ''), cursor, AbortSignal.timeout(60_000));
+        });
+        secured.get('/cloud/:provider/download', async (request, reply) => {
+          const { provider } = cloudParams.parse(request.params);
+          const { id } = z.strictObject({ id: cloudPath.min(1) }).parse(request.query);
+          const cloud = (provider === 'google' ? drive.googleDrive : drive.mega).cloudFiles();
+          const file = await cloud.downloadFile(id, AbortSignal.timeout(config.uploadTimeoutMs));
+          return reply.type('application/octet-stream').header('Content-Disposition', attachment(file.name)).send(file.stream);
+        });
+        secured.post('/cloud/:provider/uploads', async (request, reply) => {
+          const { provider } = cloudParams.parse(request.params);
+          const { parent, name, mime } = cloudUpload.parse(request.query);
+          const cloud = (provider === 'google' ? drive.googleDrive : drive.mega).cloudFiles();
+          const type = mime && !mime.toLowerCase().startsWith('application/vnd.google-apps.') ? mime : 'application/octet-stream';
+          await receiveUpload(request, reply, config.maxUploadBytes, config.uploadTimeoutMs,
+            (source, signal) => drive.uploadToCloud(cloud, parent ?? (provider === 'google' ? 'root' : ''), name, type, source, signal));
+          return reply.code(204).send();
+        });
         secured.get('/storage', async () => ({ googleDrive: drive.googleDrive.status(), mega: drive.mega.status(),
           terabox: drive.terabox.status(), telegram: drive.telegram.status(), cloudOnly: drive.cloudOnly }));
         secured.get('/storage/usage', async () => {
@@ -306,6 +334,14 @@ export async function buildApp(config: Config, options: { logger?: boolean } = {
             .header('Content-Security-Policy', "sandbox; default-src 'none'; frame-ancestors 'none'")
             .header('Content-Length', file.size)
             .send(stream);
+        });
+        secured.get('/files/:id/thumbnail', async (request, reply) => {
+          const { id } = itemParams.parse(request.params);
+          const entry = drive.index.get(id);
+          if (entry.kind !== 'file' || entry.size === null || !entry.sha256) throw new DriveError(404, 'File not found.');
+          const image = await thumbnails.get(entry.name, entry.size, entry.sha256, async () => (await drive.download(id)).stream);
+          if (!image) throw new DriveError(404, 'Thumbnail unavailable.');
+          return reply.type('image/jpeg').send(image);
         });
       });
     }, { prefix: '/api' });

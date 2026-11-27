@@ -3,10 +3,11 @@ import { createReadStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import type { ReadableStream } from 'node:stream/web';
 import { DriveError } from '../errors.ts';
-import type { Ciphertext, CloudProvider } from './adapter.ts';
+import type { Ciphertext, CloudProvider, NativeCloud, NativeListing } from './adapter.ts';
 import { reportedQuota } from './quota.ts';
 
 export const googleDriveScope = 'https://www.googleapis.com/auth/drive.appdata';
+export const googleDriveWebScopes = googleDriveScope + ' https://www.googleapis.com/auth/drive';
 const googleApi = 'https://www.googleapis.com';
 const tokenApi = 'https://oauth2.googleapis.com/token';
 const filesApi = googleApi + '/drive/v3/files';
@@ -64,6 +65,11 @@ export async function googleBinding(clientId: string, accessToken: string, fetch
 }
 
 export class GoogleDriveStorage implements CloudProvider {
+  readonly native: NativeCloud = {
+    listFiles: (parent, cursor, signal) => this.listNative(parent, cursor, signal),
+    downloadFile: (id, signal) => this.downloadNative(id, signal),
+    uploadFile: (parent, name, mime, path, bytes, signal) => this.uploadNative(parent, name, mime, path, bytes, signal),
+  };
   readonly binding: string;
   private readonly credentials: GoogleCredentials;
   private readonly fetcher: typeof fetch;
@@ -125,18 +131,31 @@ export class GoogleDriveStorage implements CloudProvider {
 
   async upload(id: string, object: Ciphertext, sourcePath: string, signal: AbortSignal) {
     this.fileUrl(id);
+    await this.uploadContent({ id, name: object.key + '.bbs', parents: ['appDataFolder'],
+      mimeType: 'application/octet-stream', appProperties: { blackboxObject: object.key } },
+    'application/octet-stream', object.bytes, sourcePath, signal);
+  }
+
+  private async uploadContent(metadata: object, mime: string, bytes: number, sourcePath: string, signal: AbortSignal, native = false) {
+    if (native && bytes === 0) {
+      const response = await this.request(filesApi, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(metadata) }, signal);
+      await this.requireNativeAccess(response);
+      await response.body?.cancel();
+      return;
+    }
     const initiation = await this.request(uploadApi + '?uploadType=resumable', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Upload-Content-Length': String(object.bytes),
-        'X-Upload-Content-Type': 'application/octet-stream' },
-      body: JSON.stringify({ id, name: object.key + '.bbs', parents: ['appDataFolder'],
-        mimeType: 'application/octet-stream', appProperties: { blackboxObject: object.key } }),
+      headers: { 'Content-Type': 'application/json', 'X-Upload-Content-Length': String(bytes),
+        'X-Upload-Content-Type': mime },
+      body: JSON.stringify(metadata),
     }, signal);
-    if (initiation.status === 409) {
+    if (!native && initiation.status === 409) {
       await initiation.body?.cancel();
       return;
     }
-    await requireSuccess(initiation);
+    if (native) await this.requireNativeAccess(initiation);
+    else await requireSuccess(initiation);
     const location = initiation.headers.get('location');
     await initiation.body?.cancel();
     const session = location && URL.parse(location);
@@ -148,14 +167,71 @@ export class GoogleDriveStorage implements CloudProvider {
     try {
       const result = await this.request(session.href, {
         method: 'PUT', duplex: 'half', body: Readable.toWeb(source) as BodyInit,
-        headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(object.bytes),
-          'Content-Range': `bytes 0-${object.bytes - 1}/${object.bytes}` },
+        headers: { 'Content-Type': mime, 'Content-Length': String(bytes),
+          'Content-Range': `bytes 0-${bytes - 1}/${bytes}` },
       }, signal, mediaTimeout);
       await requireSuccess(result);
       await result.body?.cancel();
     } finally {
       source.destroy();
     }
+  }
+
+  private async requireNativeAccess(response: Response) {
+    if (response.status === 403) {
+      const result = await response.json().catch(() => null);
+      if (result?.error?.errors?.some?.((issue: { reason?: string }) => issue.reason === 'insufficientPermissions')
+        || result?.error?.details?.some?.((issue: { reason?: string }) => issue.reason === 'ACCESS_TOKEN_SCOPE_INSUFFICIENT')) {
+        throw new DriveError(409, 'Reconnect Google Drive in Account connections and approve access to your Drive files.');
+      }
+      throw new DriveError(403, 'Google Drive denied access to this file or folder.');
+    }
+    if (response.status === 404) {
+      await response.body?.cancel();
+      throw new DriveError(404, 'Google Drive file or folder not found.');
+    }
+    await requireSuccess(response);
+  }
+
+  private async listNative(parent: string, cursor: string | undefined, signal: AbortSignal): Promise<NativeListing> {
+    const shared = parent === '@shared';
+    if (!shared && !idPattern.test(parent)) throw new DriveError(400, 'Invalid Google Drive folder.');
+    const filter = shared ? 'sharedWithMe' : "'" + parent + "' in parents";
+    const query = new URLSearchParams({ q: filter + ' and trashed = false', spaces: 'drive',
+      orderBy: 'folder,name_natural', pageSize: '100', fields: 'nextPageToken,files(id,name,mimeType,size)' });
+    if (cursor) query.set('pageToken', cursor);
+    const result = await this.request(filesApi + '?' + query, {}, signal);
+    await this.requireNativeAccess(result);
+    const data = await result.json() as { nextPageToken?: string; files?: { id: string; name: string; mimeType: string; size?: string }[] };
+    const items = (data.files ?? []).filter((file) => idPattern.test(file.id)).map((file) => {
+      const folder = file.mimeType === 'application/vnd.google-apps.folder';
+      const size = Number(file.size);
+      return { id: file.id, name: file.name, folder, size: Number.isSafeInteger(size) && size >= 0 ? size : null,
+        openUrl: !folder && file.mimeType.startsWith('application/vnd.google-apps.')
+          ? 'https://drive.google.com/open?id=' + file.id : undefined };
+    });
+    if (parent === 'root' && !cursor) items.unshift({ id: '@shared', name: 'Shared with me', folder: true, size: null, openUrl: undefined });
+    return { items, next: data.nextPageToken };
+  }
+
+  private async downloadNative(id: string, signal: AbortSignal) {
+    const url = this.fileUrl(id);
+    const info = await this.request(url + '?fields=name,mimeType,trashed', {}, signal);
+    await this.requireNativeAccess(info);
+    const file = await info.json();
+    if (file.trashed) throw new DriveError(404, 'Google Drive file not found.');
+    if (typeof file.name !== 'string' || typeof file.mimeType !== 'string' || file.mimeType.startsWith('application/vnd.google-apps.')) {
+      throw new DriveError(415, 'Open this item in Google Drive.');
+    }
+    const result = await this.request(url + '?alt=media', {}, signal, mediaTimeout);
+    await this.requireNativeAccess(result);
+    if (!result.body) throw unavailable('Google Drive returned an empty response.');
+    return { name: file.name, stream: Readable.fromWeb(result.body as ReadableStream<Uint8Array>) };
+  }
+
+  private async uploadNative(parent: string, name: string, mime: string, path: string, bytes: number, signal: AbortSignal) {
+    if (!idPattern.test(parent)) throw new DriveError(400, 'Invalid Google Drive folder.');
+    await this.uploadContent({ name, parents: [parent], mimeType: mime }, mime, bytes, path, signal, true);
   }
 
   async verify(id: string, object: Ciphertext, signal: AbortSignal) {

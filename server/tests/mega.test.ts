@@ -16,6 +16,55 @@ import type { RcloneControl } from '../src/storage/rclone-rc.ts';
 const config = { remote: 'test-mega:BlackboxStore', executable: 'rclone' };
 const marker = config.remote + '/.blackbox-store-id';
 
+test('native MEGA browses outside the Blackbox folder and sends original bytes without overwriting', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'blackbox-mega-native-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const bytes = Buffer.from('real file contents');
+  const file = join(directory, 'source');
+  await writeFile(file, bytes);
+  const binding = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  let uploaded = false;
+  const remote = new MegaStorage(config, binding, {
+    async call(route, args) {
+      if (route === 'operations/stat') {
+        if (args.fs === config.remote) {
+          assert.equal(args.remote, '.blackbox-store-id');
+          return { item: { IsDir: false, Size: binding.length } };
+        }
+        assert.equal(args.fs, 'test-mega:');
+        assert.equal(args.remote, 'existing/photo.jpg');
+        return { item: uploaded ? { IsDir: false, Size: bytes.length } : null };
+      }
+      if (route === 'operations/list') {
+        assert.deepEqual(args, { fs: 'test-mega:', remote: 'existing' });
+        return { list: [{ Name: 'photo.jpg', IsDir: false, Size: bytes.length }] };
+      }
+      assert.equal(route, 'operations/copyfile');
+      if (args.srcFs === config.remote) {
+        assert.equal(args.srcRemote, '.blackbox-store-id');
+        await writeFile(join(args.dstFs, args.dstRemote), binding);
+      } else if (args.dstFs === 'test-mega:') {
+        assert.equal(args.dstRemote, 'existing/photo.jpg');
+        assert.equal(args.immutable, 'true');
+        assert.deepEqual(await readFile(join(args.srcFs, args.srcRemote)), bytes);
+        uploaded = true;
+      } else {
+        assert.equal(args.srcFs, 'test-mega:');
+        assert.equal(args.srcRemote, 'existing/photo.jpg');
+        await writeFile(join(args.dstFs, args.dstRemote), bytes);
+      }
+      return {};
+    },
+  });
+  const signal = new AbortController().signal;
+  await remote.native.uploadFile('existing', 'photo.jpg', 'image/jpeg', file, bytes.length, signal);
+  await assert.rejects(remote.native.uploadFile('existing', 'photo.jpg', 'image/jpeg', file, bytes.length, signal), { status: 409 });
+  await assert.rejects(remote.native.listFiles('../outside', undefined, signal), { status: 400 });
+  const { items } = await remote.native.listFiles('existing', undefined, signal);
+  assert.equal(items[0].id, 'existing/photo.jpg');
+  assert.deepEqual(await buffer((await remote.native.downloadFile(items[0].id, signal)).stream), bytes);
+});
+
 test('MEGA exposes known account errors without leaking rclone error details', async () => {
   const connectionError = (error: string) =>
     rcloneOperationError(Response.json({ error }, { status: 500 }), 'operations/mkdir');

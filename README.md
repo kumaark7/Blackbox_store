@@ -24,15 +24,19 @@ Use **Account connections** to connect or reconnect a provider while Blackbox St
 
 Use **Login management** to see your active sessions, sign out other sessions, or change the owner password. Changing the password ends every session.
 
-Connect Google Drive to add a verified encrypted copy of your **Highly Important** files. [Google Cloud setup and CMD command](docs/GOOGLE_DRIVE_SETUP.md)
+Connect Google Drive to browse your Drive and upload files through the **Google Drive** tab. [Google Cloud setup and CMD command](docs/GOOGLE_DRIVE_SETUP.md)
 
-Connect MEGA to add a verified encrypted copy of your **Important** files. [MEGA setup and live test](docs/MEGA_SETUP.md)
+Connect MEGA to browse your account and upload files through the **MEGA** tab. [MEGA setup and live test](docs/MEGA_SETUP.md)
 
 Connect TeraBox to add a verified encrypted copy of your **Backup** files. [TeraBox setup and live test](docs/TERABOX_SETUP.md)
 
 You can also add Telegram to **Backup**. With both destinations connected, Blackbox copies Backup files to both. [Telegram setup and example credentials](docs/TELEGRAM_SETUP.md)
 
 After sign-in, **Dashboard** shows connected-account capacity, tracked cloud copies, and local disk usage. Hover over the chart or tap a priority to see its file count and size. Open **My files** to manage files or preview a PNG, JPEG, GIF, WebP, or PDF up to 20 MiB. PDFs use your browser's built-in viewer.
+
+**My files** opens in Grid view and remembers a switch to List view. Install FFmpeg on the Blackbox server to show image and video thumbnails. On Ubuntu, run `sudo apt install ffmpeg`. Set `FFMPEG_EXECUTABLE` in `.env` if the binary is outside the service's PATH. The grid falls back to file icons when a thumbnail is unavailable.
+
+Open the **Google Drive** or **MEGA** tab in **My files** to browse the connected account, download existing files, and upload into the current folder. Uploads made from these tabs appear in the provider with their original contents and filename. They do not become encrypted Blackbox backup objects. Use **Blackbox files** for existing encrypted files and Telegram or TeraBox backups. Reconnect an existing Google Drive account to grant access to its files.
 
 ## Verify
 
@@ -46,7 +50,7 @@ The storage-core tests can run without third-party packages using `node --test s
 
 For a local check of the built UI, run `npm run build`, set `APP_ORIGIN=http://127.0.0.1:4174` in `.env`, then run `npm start` and open [http://127.0.0.1:4174](http://127.0.0.1:4174).
 
-HTTPS deployments require a connected cloud provider for new uploads. Highly Important files go to Google Drive, Important files go to MEGA, and Backup files go to TeraBox when connected or to a connected Telegram Backup Channel. Blackbox keeps encrypted staging files during transfers and deletes them after cloud verification or after 24 hours of upload inactivity. Existing local files remain accessible. The VPS keeps the file index, storage key, and connection credentials.
+HTTPS deployments require a connected cloud provider for new uploads. The Google Drive and MEGA tabs upload directly to their selected cloud folders. The Telegram upload bot sends Highly Important files to Google Drive and Important files to MEGA. Backup files go to TeraBox when connected or to a connected Telegram Backup Channel. The VPS keeps temporary upload files, the index, the storage key, and connection credentials.
 
 For the browser check, sign in, open **My files**, and upload a test image, PDF, and plain text file. Open both previews and download the text file. Move a disposable copy to the Recycle Bin, return to **Dashboard** to check the change, then restore the copy. Repeat at a narrow viewport before packaging the Android client.
 

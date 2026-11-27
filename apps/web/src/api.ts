@@ -19,6 +19,7 @@ export type Entry = {
   protection: 'single-copy' | 'degraded' | 'replicated' | null;
   deletionPending: boolean;
   preview: 'image' | 'pdf' | null;
+  thumbnail: 'image' | 'video' | null;
   cloudCopies: CloudProvider[];
 };
 export type Listing = {
@@ -87,7 +88,7 @@ function serverMessage(body: unknown) {
 
 async function request(path: string, options: RequestInit) {
   const headers = new Headers(options.headers);
-  if (options.body !== undefined) headers.set('Content-Type', 'application/json');
+  if (options.body !== undefined && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   const response = await fetch('/api' + path, { ...options, headers });
   if (!response.ok) {
     if (response.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event(sessionEnded));

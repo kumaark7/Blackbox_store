@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { DriveError } from '../errors.ts';
 import { previewKind } from './preview.ts';
+import { thumbnailKind } from './thumbnail.ts';
 
 export const ROOT_ID = '00000000-0000-4000-8000-000000000000';
 export const IMPORTANCE = ['highly-important', 'important', 'backup'] as const;
@@ -34,6 +35,7 @@ type PublicEntry = Omit<NodeRow, 'objectKey' | 'state' | 'sha256' | 'storageForm
   protection: 'single-copy' | 'degraded' | 'replicated' | null;
   deletionPending: boolean;
   preview: ReturnType<typeof previewKind>;
+  thumbnail: ReturnType<typeof thumbnailKind>;
   cloudCopies: ('google-drive' | 'mega' | 'terabox' | 'telegram')[];
 };
 
@@ -66,6 +68,7 @@ const publicFields = (row: NodeRow): PublicEntry => ({
     : row.googleVerified || row.megaVerified || row.teraboxVerified || row.telegramVerified ? 'replicated' : 'single-copy',
   deletionPending: Boolean(row.deletionPending),
   preview: row.state === 'ready' && row.kind === 'file' ? previewKind(row.name, row.size) : null,
+  thumbnail: row.state === 'ready' && row.kind === 'file' ? thumbnailKind(row.name, row.size) : null,
   cloudCopies: [
     ...(row.googleVerified ? ['google-drive' as const] : []),
     ...(row.megaVerified ? ['mega' as const] : []),

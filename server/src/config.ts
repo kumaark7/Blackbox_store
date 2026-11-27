@@ -12,6 +12,7 @@ const environment = z.object({
   MAX_CONCURRENT_UPLOADS: z.coerce.number().int().min(1).max(8).default(2),
   UPLOAD_TIMEOUT_MS: z.coerce.number().int().min(1000).max(86_400_000).default(7_200_000),
   SESSION_HOURS: z.coerce.number().int().min(1).max(168).default(24),
+  FFMPEG_EXECUTABLE: z.string().min(1).default('ffmpeg'),
   MEGA_RCLONE_REMOTE: z.string().regex(megaRemotePattern).optional(),
   MEGA_RCLONE_CONFIG: z.string().min(1).optional(),
   MEGA_RCLONE_EXECUTABLE: z.string().min(1).default('rclone'),
@@ -46,6 +47,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
       configPath: values.MEGA_RCLONE_CONFIG && resolve(values.MEGA_RCLONE_CONFIG) } : undefined,
     megaExecutable: values.MEGA_RCLONE_EXECUTABLE,
     telegramClientDir: values.TELEGRAM_CLIENT_DIR && resolve(values.TELEGRAM_CLIENT_DIR),
+    ffmpegExecutable: values.FFMPEG_EXECUTABLE,
     googleOAuth: values.GOOGLE_OAUTH_CLIENT_ID && values.GOOGLE_OAUTH_CLIENT_SECRET ? {
       clientId: values.GOOGLE_OAUTH_CLIENT_ID, clientSecret: values.GOOGLE_OAUTH_CLIENT_SECRET,
       clientType: values.GOOGLE_OAUTH_CLIENT_TYPE,

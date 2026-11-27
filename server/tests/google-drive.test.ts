@@ -19,6 +19,46 @@ const credentials = {
 };
 const checksum = (data: Buffer) => createHash('sha256').update(data).digest('hex');
 
+test('native Google Drive browsing and upload use normal folders, names, and file bytes', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'blackbox-google-native-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const bytes = Buffer.from('plain file contents');
+  const path = join(directory, 'contents');
+  await writeFile(path, bytes);
+  let accepted = false;
+  const provider = new GoogleDriveStorage(credentials, async (input, init) => {
+    const url = new URL(String(input));
+    if (url.hostname === 'oauth2.googleapis.com') return Response.json({ access_token: 'fixture-access', expires_in: 3600 });
+    if (url.pathname.startsWith('/upload/')) {
+      if (init?.method === 'POST') {
+        assert.deepEqual(JSON.parse(init.body as string),
+          { name: 'original.txt', parents: ['folder-a'], mimeType: 'text/plain' });
+        return new Response(null, { headers: { Location: 'https://www.googleapis.com/upload/drive/v3/files?upload_id=test' } });
+      }
+      assert.deepEqual(Buffer.from(await new Response(init?.body).arrayBuffer()), bytes);
+      accepted = true;
+      return Response.json({ id: 'native-file' });
+    }
+    if (url.pathname === '/drive/v3/files') {
+      assert.equal(url.searchParams.get('spaces'), 'drive');
+      assert.equal(url.searchParams.get('q'), "'folder-a' in parents and trashed = false");
+      assert.equal(url.searchParams.get('pageToken'), 'next');
+      return Response.json({ files: [{ id: 'native-file', name: 'original.txt', mimeType: 'text/plain', size: String(bytes.length) }] });
+    }
+    assert.equal(url.pathname, '/drive/v3/files/native-file');
+    return url.searchParams.get('alt') ? new Response(new Uint8Array(bytes))
+      : Response.json({ name: 'original.txt', mimeType: 'text/plain', trashed: false });
+  });
+  const signal = new AbortController().signal;
+  await provider.native.uploadFile('folder-a', 'original.txt', 'text/plain', path, bytes.length, signal);
+  assert.equal(accepted, true);
+  const { items } = await provider.native.listFiles('folder-a', 'next', signal);
+  assert.equal(items[0].name, 'original.txt');
+  const downloaded = await provider.native.downloadFile('native-file', signal);
+  assert.equal(downloaded.name, 'original.txt');
+  assert.deepEqual(await buffer(downloaded.stream), bytes);
+});
+
 function googleFixture() {
   const files = new Map<string, { content: Buffer; key: string }>();
   const sessions = new Map<string, string>();

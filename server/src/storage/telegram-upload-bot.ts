@@ -204,14 +204,23 @@ export class TelegramUploadBot {
       if (!item || !importance) return;
       pending.delete(id);
       const uploadSignal = AbortSignal.any([signal, AbortSignal.timeout(this.timeout)]);
+      const getFile = () => api.file(item.fileId, this.limit, uploadSignal);
+      const direct = this.drive.cloudOnly && importance !== 'backup';
       try {
-        const file = await this.drive.upload({ parentId: ROOT_ID, name: item.name, importance, signal: uploadSignal },
-          () => api.file(item.fileId, this.limit, uploadSignal));
-        await send('Saved ' + file.name + ' in My files as ' + names[importance] + '.');
+        if (direct) {
+          const google = importance === 'highly-important';
+          const cloud = (google ? this.drive.googleDrive : this.drive.mega).cloudFiles();
+          const name = await this.drive.uploadToCloud(cloud, google ? 'root' : '', item.name,
+            'application/octet-stream', getFile, uploadSignal);
+          await send('Saved ' + name + ' to ' + (google ? 'Google Drive' : 'MEGA') + '.');
+        } else {
+          const file = await this.drive.upload({ parentId: ROOT_ID, name: item.name, importance, signal: uploadSignal }, getFile);
+          await send('Saved ' + file.name + ' in My files as ' + names[importance] + '.');
+        }
       } catch (failure) {
-        if (!signal.aborted) await send(failure instanceof DriveError && failure.status === 409
-          ? 'A file with that name already exists. Rename it and send it again.'
-          : 'Blackbox could not finish the upload. Check My files before sending it again.');
+        if (!signal.aborted) await send(direct && failure instanceof DriveError ? failure.message
+          : failure instanceof DriveError && failure.status === 409 ? 'A file with that name already exists. Rename it and send it again.'
+            : 'Blackbox could not finish the upload. Check My files before sending it again.');
       }
       return;
     }

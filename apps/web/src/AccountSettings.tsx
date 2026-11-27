@@ -215,7 +215,10 @@ export function AccountConnections({ onLogout }: { onLogout: () => void }) {
         {provider === 'googleDrive' ? (
           state.providers.googleDrive === 'connected' || state.providers.googleDrive === 'retrying' ? <>
             <p role="status">{statusLabels[state.providers.googleDrive]}</p>
-            <button type="button" disabled={busy} onClick={() => void disconnectGoogle()}>Disconnect Google Drive</button>
+            <div className="connection-methods">
+              {state.googleReady && <button type="button" disabled={busy} onClick={() => void start({})}>Reconnect Google Drive</button>}
+              <button type="button" disabled={busy} onClick={() => void disconnectGoogle()}>Disconnect Google Drive</button>
+            </div>
           </>
             : state.googleReady ? <button type="button" className="primary" disabled={busy}
               onClick={() => void start({})}>{busy ? 'Opening Google…'

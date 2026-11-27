@@ -2,12 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import {
   Archive, ArrowDownToLine, ArrowLeft, ArrowRight, ChevronRight, Cloud, Ellipsis, File as FileIcon, Folder,
-  Eye, FolderPlus, Grid2X2, HardDrive, List, Search, Trash2, Upload, X,
+  Eye, Film, FolderPlus, Grid2X2, HardDrive, List, Search, Trash2, Upload, X,
 } from 'lucide-react';
 import { api, ApiError, cloudNames, getEntries, getPreview, labels, ROOT_ID, uploadFile } from './api';
 import type { CloudStatus, Entry, Importance, Listing, SavedTransfer, Sort, TeraboxCleanup } from './api';
 import { formatSize } from './formatSize';
 import { Workspace } from './Workspace';
+import { FileSources } from './CloudFiles';
 
 type Edit = { action: 'new' | 'rename' | 'move' | 'copy' | 'importance' | 'trash' | 'purge'; entry?: Entry };
 type Transfer = { id: number; name: string; size: number; loaded: number; status: string; error?: boolean };
@@ -85,7 +86,10 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort>('name');
   const [offset, setOffset] = useState(0);
-  const [grid, setGrid] = useState(false);
+  const [grid, setGrid] = useState(() => {
+    try { return localStorage.getItem('blackbox-files-view') !== 'list'; }
+    catch { return true; }
+  });
   const [listing, setListing] = useState<Listing | null>(null);
   const [error, setError] = useState('');
   const [revision, setRevision] = useState(0);
@@ -104,6 +108,11 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const resumeInput = useRef<HTMLInputElement>(null);
   const resumeTarget = useRef<SavedTransfer | null>(null);
+  function selectView(grid: boolean) {
+    setGrid(grid);
+    try { localStorage.setItem('blackbox-files-view', grid ? 'grid' : 'list'); }
+    catch { /* Preferences are optional. */ }
+  }
   const googleEnabled = cloud.googleDrive === 'connected' || cloud.googleDrive === 'retrying';
   const megaEnabled = cloud.mega === 'connected' || cloud.mega === 'retrying';
   const teraboxEnabled = cloud.terabox === 'connected' || cloud.terabox === 'retrying';
@@ -114,6 +123,7 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
     : importance === 'important' ? (megaEnabled ? 'MEGA' : '')
       : (teraboxEnabled ? 'TeraBox' : telegramEnabled ? 'Telegram Backup Channel' : '');
   const requiredProvider = importance === 'highly-important' ? 'Google Drive' : importance === 'important' ? 'MEGA' : 'TeraBox or Telegram Backup Channel';
+  const nativeUpload = cloud.cloudOnly && importance !== 'backup' ? (importance === 'important' ? 'mega' : 'google') : null;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -274,6 +284,7 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
       </header>
 
       <div className="content">
+        <FileSources />
         <div className="page-title">
           <div><h1>{title}</h1>{search && <p>Results for “{search}”</p>}</div>
           {canUpload && <div className="actions">
@@ -309,8 +320,8 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
                 <option value="name">Name</option><option value="updated">Recently changed</option><option value="size">Largest first</option>
               </select>
               <div className="toggle">
-                <button className="icon" aria-label="List view" aria-pressed={!grid} onClick={() => setGrid(false)}><List size={17} /></button>
-                <button className="icon" aria-label="Grid view" aria-pressed={grid} onClick={() => setGrid(true)}><Grid2X2 size={16} /></button>
+                <button className="icon" aria-label="List view" aria-pressed={!grid} onClick={() => selectView(false)}><List size={17} /></button>
+                <button className="icon" aria-label="Grid view" aria-pressed={grid} onClick={() => selectView(true)}><Grid2X2 size={16} /></button>
               </div>
             </div>
           </div>
@@ -379,7 +390,8 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
       <form onSubmit={(event) => { event.preventDefault(); void runUploads(selected, parentId, importance); }}>
         <ul className="upload-files">{selected.map((file, index) => <li key={index}><span>{file.name}</span><span>{formatSize(file.size)}</span></li>)}</ul>
         <ImportanceField value={importance} change={setImportance} />
-        {cloud.cloudOnly ? (uploadDestination
+        {nativeUpload ? <p>Open the <a href={'/drive?cloud=' + nativeUpload}>{requiredProvider} tab</a> to upload directly to its folders.</p>
+          : cloud.cloudOnly ? (uploadDestination
           ? <p className="muted">Encrypted storage on {uploadDestination}.</p>
           : <p className="warning">Connect {requiredProvider} in <a href="/connections">Account connections</a> before uploading.</p>)
           : <><p className="muted">Encrypted local storage</p>
@@ -393,13 +405,25 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
           ? 'Blackbox will verify a backup copy on ' + backupDestinations + '.'
           : 'Connect TeraBox or Telegram to add a cloud backup.'}</p>}</>}
         <footer className="modal-actions"><button type="button" onClick={() => setSelected([])}>Cancel</button>
-          <button className="primary" disabled={cloud.cloudOnly && !uploadDestination}>Start upload</button></footer>
+          <button className="primary" disabled={Boolean(nativeUpload) || (cloud.cloudOnly && !uploadDestination)}>Start upload</button></footer>
       </form>
     </Modal>}
 
     {edit && <EntryDialog edit={edit} parentId={parentId} close={() => setEdit(null)} success={refresh} />}
     {preview && <FilePreview key={preview.id} entry={preview} close={() => setPreview(null)} />}
   </Workspace>;
+}
+
+function TileThumbnail({ entry, onPreview }: { entry: Entry; onPreview: () => void }) {
+  const [failed, setFailed] = useState(false);
+  const tile = <>
+    <img src={'/api/files/' + entry.id + '/thumbnail'} loading="lazy" decoding="async" alt="" onError={() => setFailed(true)} />
+    {entry.thumbnail === 'video' && <span className="tile-video" aria-hidden="true"><Film size={15} /></span>}
+  </>;
+  if (failed) return <div className="tile-thumbnail" aria-hidden="true">{entry.thumbnail === 'video' ? <Film size={26} /> : <FileIcon size={26} />}</div>;
+  return entry.preview === 'image'
+    ? <button type="button" className="tile-thumbnail" aria-label={'Preview ' + entry.name} onClick={onPreview}>{tile}</button>
+    : <div className="tile-thumbnail" aria-hidden="true">{tile}</div>;
 }
 
 function FileRow({ entry, grid, trash, open, onPreview, onEdit, restore }: {
@@ -410,9 +434,11 @@ function FileRow({ entry, grid, trash, open, onPreview, onEdit, restore }: {
   const replicas = entry.cloudCopies.map((provider) => cloudNames[provider]).join(', ');
   const download = '/api/files/' + entry.id + '/download';
   const icon = folder ? <Folder size={grid ? 28 : 18} /> : <FileIcon size={grid ? 28 : 18} />;
+  const thumbnail = grid && !trash && entry.thumbnail;
   return <li className={grid ? 'file-tile' : 'file-row'}>
+    {thumbnail && <TileThumbnail key={entry.updatedAt} entry={entry} onPreview={onPreview} />}
     <div className="entry-name">
-      <span className={folder ? 'entry-icon folder' : 'entry-icon'}>{icon}</span>
+      {!thumbnail && <span className={folder ? 'entry-icon folder' : 'entry-icon'}>{icon}</span>}
       {trash ? <span className="file-name">{entry.name}</span> : folder ?
         <button className="text-button file-name" title={entry.name} onClick={open}>{entry.name}</button> : entry.preview ?
         <button className="text-button file-name" title={entry.name} onClick={onPreview}>{entry.name}</button> :

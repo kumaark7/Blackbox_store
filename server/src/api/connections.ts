@@ -6,7 +6,7 @@ import type { Config } from '../config.ts';
 import { DriveError } from '../errors.ts';
 import type { Drive } from '../files/drive.ts';
 import { bindGoogleDrive, readGoogleCredentials, removeGoogleCredentials, writeGoogleCredentials } from '../storage/google-drive-credentials.ts';
-import { googleBinding, googleDriveScope, GoogleDriveStorage, requestGoogleToken } from '../storage/google-drive.ts';
+import { googleBinding, googleDriveWebScopes, GoogleDriveStorage, requestGoogleToken } from '../storage/google-drive.ts';
 import { loadStorageKey } from '../storage/key.ts';
 import { managedMega, obscureMegaPassword, readMegaCredentials, saveMegaCredentials } from '../storage/mega-credentials.ts';
 import { connectMega, openMega } from '../storage/mega-rclone.ts';
@@ -205,7 +205,7 @@ export class Connections {
         const verifier = nonce() + nonce();
         job.state = nonce();
         const query = new URLSearchParams({ client_id: clientId, redirect_uri: redirect, response_type: 'code',
-          scope: googleDriveScope, access_type: 'offline', prompt: 'consent', state: job.state,
+          scope: googleDriveWebScopes, access_type: 'offline', prompt: 'consent', state: job.state,
           code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256' });
         const code = await this.prompt(job, { kind: 'google', url: 'https://accounts.google.com/o/oauth2/v2/auth?' + query });
         this.check(job);

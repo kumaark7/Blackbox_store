@@ -65,6 +65,17 @@ export class CloudReplicas {
     return Boolean(this.provider && !this.connecting && !this.shutdown.signal.aborted);
   }
 
+  get supportsNativeFiles() {
+    return Boolean(this.provider?.native);
+  }
+
+  cloudFiles() {
+    if (!this.available() || !this.provider?.native) {
+      throw new DriveError(409, 'Connect ' + this.settings.name + ' in Account connections to browse its files.');
+    }
+    return this.provider.native;
+  }
+
   async storePending(id: string, object: StoredObject, requestSignal?: AbortSignal) {
     const provider = this.provider;
     if (!provider || !this.available()) throw new DriveError(409, 'Connect ' + this.settings.name + ' in Account connections first.');

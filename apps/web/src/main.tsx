@@ -9,6 +9,7 @@ import { DashboardHome } from './StorageDashboard';
 import './styles.css';
 
 const FileManager = lazy(() => import('./FileManager').then((module) => ({ default: module.FileManager })));
+const CloudFiles = lazy(() => import('./CloudFiles').then((module) => ({ default: module.CloudFiles })));
 const AccountConnections = lazy(() => import('./AccountSettings').then((module) => ({ default: module.AccountConnections })));
 const TelegramHelp = lazy(() => import('./AccountSettings').then((module) => ({ default: module.TelegramHelp })));
 const LoginManagement = lazy(() => import('./AccountSettings').then((module) => ({ default: module.LoginManagement })));
@@ -39,10 +40,13 @@ function App() {
 
   if (auth?.authenticated) {
     if (window.location.pathname === '/') return <DashboardHome onLogout={signOut} />;
+    const cloud = new URLSearchParams(window.location.search).get('cloud');
     return <Suspense fallback={<p className="empty" role="status">Loading drive.</p>}>
       {window.location.pathname === '/connections' ? <AccountConnections onLogout={signOut} />
         : window.location.pathname === '/connections/telegram-help' ? <TelegramHelp onLogout={signOut} />
-        : window.location.pathname === '/account' ? <LoginManagement onLogout={signOut} /> : <FileManager onLogout={signOut} />}
+        : window.location.pathname === '/account' ? <LoginManagement onLogout={signOut} />
+        : cloud === 'google' || cloud === 'mega' ? <CloudFiles provider={cloud} onLogout={signOut} />
+        : <FileManager onLogout={signOut} />}
     </Suspense>;
   }
 
