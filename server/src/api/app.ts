@@ -36,6 +36,8 @@ const change = z.strictObject({ parentId: id.optional(), name: name.optional(), 
 const listing = z.object({
   parentId: id.default(ROOT_ID),
   search: z.string().trim().min(1).max(180).optional(),
+  priority: z.enum(IMPORTANCE).optional(),
+  provider: z.enum(['google-drive', 'mega', 'terabox', 'telegram']).optional(),
   sort: z.enum(['name', 'updated', 'size']).default('name'),
   offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
   limit: z.coerce.number().int().min(1).max(100).default(50),

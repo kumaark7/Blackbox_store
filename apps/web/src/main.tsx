@@ -7,6 +7,7 @@ import type { AuthStatus } from './api';
 import { Brand } from './Brand';
 import { DashboardHome } from './StorageDashboard';
 import './styles.css';
+import './glossy.css';
 
 const FileManager = lazy(() => import('./FileManager').then((module) => ({ default: module.FileManager })));
 const CloudFiles = lazy(() => import('./CloudFiles').then((module) => ({ default: module.CloudFiles })));

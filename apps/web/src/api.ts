@@ -109,12 +109,15 @@ export async function getPreview(id: string, signal: AbortSignal) {
   return response.blob();
 }
 
-export function getEntries(query: { parentId: string; sort?: Sort; search?: string; offset?: number; trash?: boolean },
+export function getEntries(query: { parentId: string; sort?: Sort; search?: string; offset?: number; trash?: boolean;
+  priority?: Importance; provider?: CloudProvider },
   signal?: AbortSignal) {
   const params = new URLSearchParams({ parentId: query.parentId, offset: String(query.offset ?? 0) });
   if (query.sort) params.set('sort', query.sort);
   if (query.search) params.set('search', query.search);
   if (query.trash) params.set('trash', '1');
+  if (query.priority) params.set('priority', query.priority);
+  if (query.provider) params.set('provider', query.provider);
   return api<Listing>('/entries?' + params, { signal });
 }
 

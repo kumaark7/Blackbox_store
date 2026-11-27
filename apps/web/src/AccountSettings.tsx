@@ -94,7 +94,10 @@ function TeraBoxFrame({ step, onCode }: { step: Extract<Step, { kind: 'teraboxWe
 
 export function AccountConnections({ onLogout }: { onLogout: () => void }) {
   const [state, setState] = useState<Connections | null>(null);
-  const [provider, setProvider] = useState<Provider>('googleDrive');
+  const [provider, setProvider] = useState<Provider>(() => {
+    const requested = new URLSearchParams(window.location.search).get('provider');
+    return requested && Object.hasOwn(providers, requested) ? requested as Provider : 'googleDrive';
+  });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const pending = state?.flow?.status === 'pending';
@@ -328,7 +331,7 @@ export function LoginManagement({ onLogout }: { onLogout: () => void }) {
           onClick={() => void submit('/account/sessions/revoke-others')}>Sign out other sessions</button>
       </>}
     </section>
-    <section className="settings-panel">
+    <section className="settings-panel" id="security">
       <h2>Change owner password</h2>
       <p className="muted">Changing the password signs out every session. Use 12 to 128 characters.</p>
       <form className="settings-form" onSubmit={changePassword}>

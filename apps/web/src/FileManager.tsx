@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import {
   Archive, ArrowDownToLine, ArrowLeft, ArrowRight, ChevronRight, Cloud, Ellipsis, File as FileIcon, Folder,
-  Eye, Film, FolderPlus, Grid2X2, HardDrive, List, Search, Trash2, Upload, X,
+  Eye, Film, FolderPlus, Grid2X2, HardDrive, List, Search, Upload, X,
 } from 'lucide-react';
 import { api, ApiError, cloudNames, getEntries, getPreview, labels, ROOT_ID, uploadFile } from './api';
-import type { CloudStatus, Entry, Importance, Listing, SavedTransfer, Sort, TeraboxCleanup } from './api';
+import type { CloudProvider, CloudStatus, Entry, Importance, Listing, SavedTransfer, Sort, TeraboxCleanup } from './api';
 import { formatSize } from './formatSize';
 import { Workspace } from './Workspace';
 import { FileSources } from './CloudFiles';
+import { FileLoading } from './FileLoading';
 
 type Edit = { action: 'new' | 'rename' | 'move' | 'copy' | 'importance' | 'trash' | 'purge'; entry?: Entry };
 type Transfer = { id: number; name: string; size: number; loaded: number; status: string; error?: boolean };
@@ -80,10 +81,17 @@ function FilePreview({ entry, close }: { entry: Entry; close: () => void }) {
 }
 
 export function FileManager({ onLogout }: { onLogout: () => void }) {
-  const [view, setView] = useState<'files' | 'trash'>('files');
+  const [query] = useState(() => new URLSearchParams(window.location.search));
+  const [view, setView] = useState<'files' | 'trash'>(query.get('view') === 'trash' ? 'trash' : 'files');
   const [parentId, setParent] = useState(ROOT_ID);
-  const [searchInput, setSearchInput] = useState('');
-  const [search, setSearch] = useState('');
+  const initialSearch = view === 'files' ? (query.get('q') ?? '').trim().slice(0, 180) : '';
+  const [searchInput, setSearchInput] = useState(initialSearch);
+  const [search, setSearch] = useState(initialSearch);
+  const [priority, setPriority] = useState<Importance | ''>(() => {
+    const requested = query.get('priority');
+    return requested && Object.hasOwn(labels, requested) ? requested as Importance : '';
+  });
+  const [provider, setProvider] = useState<CloudProvider | ''>('');
   const [sort, setSort] = useState<Sort>('name');
   const [offset, setOffset] = useState(0);
   const [grid, setGrid] = useState(() => {
@@ -93,7 +101,8 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
   const [listing, setListing] = useState<Listing | null>(null);
   const [error, setError] = useState('');
   const [revision, setRevision] = useState(0);
-  const [edit, setEdit] = useState<Edit | null>(null);
+  const [edit, setEdit] = useState<Edit | null>(() => view === 'files' && query.get('action') === 'folder' ? { action: 'new' } : null);
+  const [uploadChooser, setUploadChooser] = useState(view === 'files' && !initialSearch && query.get('action') === 'upload');
   const [preview, setPreview] = useState<Entry | null>(null);
   const [selected, setSelected] = useState<File[]>([]);
   const [importance, setImportance] = useState<Importance>(readImportance);
@@ -128,13 +137,16 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
   useEffect(() => {
     const controller = new AbortController();
     setListing(null);
-    const update = (initial: boolean) => getEntries({ parentId, sort, search, offset, trash: view === 'trash' }, controller.signal)
+    const update = (initial: boolean) => getEntries({
+      parentId, sort, search, offset, trash: view === 'trash',
+      priority: priority || undefined, provider: provider || undefined,
+    }, controller.signal)
       .then((result) => { if (!controller.signal.aborted) setListing(result); })
       .catch((failure: Error) => { if (initial && !controller.signal.aborted) setError(failure.message); });
     void update(true);
     const timer = cloudEnabled ? window.setInterval(() => void update(false), 5000) : undefined;
     return () => { controller.abort(); window.clearInterval(timer); };
-  }, [parentId, sort, search, offset, view, revision, cloudEnabled]);
+  }, [parentId, sort, search, offset, view, revision, cloudEnabled, priority, provider]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -167,6 +179,8 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
     setError('');
     setSearch('');
     setSearchInput('');
+    setPriority('');
+    setProvider('');
     setOffset(0);
     setParent(folderId);
     setView(destination);
@@ -196,7 +210,10 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
   }
 
   function choose(files: File[]) {
-    if (files.length && !active && !search && view === 'files') setSelected(files);
+    if (files.length && !active && !search && view === 'files') {
+      setUploadChooser(false);
+      setSelected(files);
+    }
   }
 
   async function runUploads(batch: File[], folderId: string, priority: Importance) {
@@ -254,16 +271,15 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
   }
 
   const canUpload = view === 'files' && !search;
-  const title = view === 'trash' ? 'Recycle bin' : search ? 'Search results' : 'My files';
+  const filtered = Boolean(search || priority || provider);
+  const title = view === 'trash' ? 'Recycle Bin' : search ? 'Search results' : 'My Files';
 
-  return <Workspace onSignOut={() => void signOut()} filesNavigation={<>
-        <button className={view === 'files' ? 'nav active' : 'nav'} onClick={() => navigate(ROOT_ID)}>
-          <Folder size={18} /> My files
+  return <Workspace onSignOut={() => void signOut()} trashActive={view === 'trash'} filesNavigation={
+        <button className={view === 'files' ? 'nav active' : 'nav'} aria-current={view === 'files' ? 'page' : undefined}
+          onClick={() => { navigate(ROOT_ID); window.history.replaceState(null, '', '/drive'); }}>
+          <Folder size={18} /> My Files
         </button>
-        <button className={view === 'trash' ? 'nav active' : 'nav'} onClick={() => navigate(ROOT_ID, 'trash')}>
-          <Trash2 size={18} /> Recycle bin
-        </button>
-    </>} storage={<>
+    } storage={<>
         {!cloud.cloudOnly && <div className="storage-label"><HardDrive size={16} /><span>Local storage</span></div>}
         {cloud.googleDrive !== 'off' && <div className="storage-label"><Cloud size={16} />{connectionLabel('Google Drive', cloud.googleDrive)}</div>}
         {cloud.mega !== 'off' && <div className="storage-label"><Cloud size={16} />{connectionLabel('MEGA', cloud.mega)}</div>}
@@ -314,6 +330,20 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
               </span>)}
             </nav>
             <div className="panel-actions">
+              {view === 'files' && <>
+                <select aria-label="Filter by provider" value={provider} onChange={(event) => {
+                  setProvider(event.currentTarget.value as CloudProvider | ''); setOffset(0);
+                }}>
+                  <option value="">All providers</option>
+                  {Object.entries(cloudNames).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+                </select>
+                <select aria-label="Filter by priority" value={priority} onChange={(event) => {
+                  setPriority(event.currentTarget.value as Importance | ''); setOffset(0);
+                }}>
+                  <option value="">All priorities</option>
+                  {Object.entries(labels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+                </select>
+              </>}
               <select aria-label="Sort files" value={sort} onChange={(event) => {
                 setSort(event.target.value as Sort); setOffset(0);
               }}>
@@ -327,10 +357,10 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
           </div>
 
           {error && <p role="alert" className="banner error">{error} <button onClick={refresh}>Refresh</button></p>}
-          {!listing ? (!error && <div className="empty" role="status">Loading files…</div>) : listing.items.length === 0 ?
+          {!listing ? (!error && <FileLoading />) : listing.items.length === 0 ?
             <div className="empty">
               {view === 'trash' ? <Archive size={34} /> : search ? <Search size={34} /> : <Folder size={34} />}
-              <strong>{view === 'trash' ? 'The recycle bin is empty' : search ? 'No matching files' : 'This folder is empty'}</strong>
+              <strong>{view === 'trash' ? 'The recycle bin is empty' : filtered ? 'No matching files' : 'This folder is empty'}</strong>
               {canUpload && <span>Drop files here or choose Upload.</span>}
             </div> : <>
               {!grid && <div className="file-row table-heading"><span>Name</span><span>Importance</span><span>Size</span><span>Modified</span><span /></div>}
@@ -386,6 +416,17 @@ export function FileManager({ onLogout }: { onLogout: () => void }) {
       </div>
     </main>
 
+    {uploadChooser && <Modal title="Upload files" close={() => setUploadChooser(false)}>
+      <div className="upload-destinations">
+        {googleEnabled && <a className="primary" href="/drive?cloud=google"><Cloud size={17} /> Google Drive</a>}
+        {megaEnabled && <a className="primary" href="/drive?cloud=mega"><Cloud size={17} /> MEGA</a>}
+        {Boolean(backupDestinations) && <button onClick={() => { setImportance('backup'); fileInput.current?.click(); }}>
+          <Archive size={17} /> Choose backup files
+        </button>}
+        {!cloud.cloudOnly && <button onClick={() => fileInput.current?.click()}><Upload size={17} /> Choose files</button>}
+        {cloud.cloudOnly && !cloudEnabled && <a className="primary" href="/connections">Connect a cloud account</a>}
+      </div>
+    </Modal>}
     {selected.length > 0 && <Modal title={selected.length === 1 ? 'Upload file' : 'Upload files'} close={() => setSelected([])}>
       <form onSubmit={(event) => { event.preventDefault(); void runUploads(selected, parentId, importance); }}>
         <ul className="upload-files">{selected.map((file, index) => <li key={index}><span>{file.name}</span><span>{formatSize(file.size)}</span></li>)}</ul>
@@ -445,7 +486,7 @@ function FileRow({ entry, grid, trash, open, onPreview, onEdit, restore }: {
         <a className="file-name" title={entry.name} href={download}>{entry.name}</a>}
     </div>
     <span className="entry-priority">{entry.deletionPending ? <span className="priority degraded">Deletion pending</span> :
-      entry.importance && <span className={entry.protection === 'degraded' ? 'priority degraded' : 'priority'}
+      entry.importance && <span data-priority={entry.importance} className={entry.protection === 'degraded' ? 'priority degraded' : 'priority'}
       title={entry.protection === 'degraded' ? 'Awaiting a verified Google Drive copy' + (replicas ? '. Verified on ' + replicas : '')
         : replicas ? 'Verified cloud copies on ' + replicas : undefined}>{labels[entry.importance]}
       {replicas && <>

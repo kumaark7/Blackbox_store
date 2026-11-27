@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowDownToLine, ArrowLeft, ExternalLink, File, Folder, Upload } from 'lucide-react';
+import { ArrowDownToLine, ChevronRight, ExternalLink, File, Folder, Grid2X2, List, Search, Upload } from 'lucide-react';
 import { api } from './api';
 import { formatSize } from './formatSize';
 import { Workspace } from './Workspace';
+import { FileLoading } from './FileLoading';
 
 export const cloudFileProviders = { google: 'Google Drive', mega: 'MEGA' } as const;
 type Provider = keyof typeof cloudFileProviders;
@@ -29,6 +30,12 @@ export function CloudFiles({ provider, onLogout }: { provider: Provider; onLogou
   const [uploadError, setUploadError] = useState('');
   const [uploading, setUploading] = useState('');
   const [paging, setPaging] = useState(false);
+  const [query, setQuery] = useState('');
+  const [sort, setSort] = useState<'name' | 'size'>('name');
+  const [grid, setGrid] = useState(() => {
+    try { return localStorage.getItem('blackbox-files-view') === 'grid'; }
+    catch { return false; }
+  });
   const folder = trail.at(-1);
   const parent = folder?.id;
 
@@ -47,6 +54,7 @@ export function CloudFiles({ provider, onLogout }: { provider: Provider; onLogou
     setListing(null);
     setError('');
     setUploadError('');
+    setQuery('');
     setTrail(next);
   }
 
@@ -89,8 +97,17 @@ export function CloudFiles({ provider, onLogout }: { provider: Provider; onLogou
   }
 
   const busy = paging || Boolean(uploading);
+  const filter = query.trim().toLocaleLowerCase();
+  const visible = listing?.items.filter(({ name }) => name.toLocaleLowerCase().includes(filter))
+    .sort((a, b) => Number(b.folder) - Number(a.folder)
+      || (sort === 'size' ? (b.size ?? -1) - (a.size ?? -1) : 0) || a.name.localeCompare(b.name)) ?? [];
+  function selectView(value: boolean) {
+    setGrid(value);
+    try { localStorage.setItem('blackbox-files-view', value ? 'grid' : 'list'); }
+    catch { /* Preferences are optional. */ }
+  }
   return <Workspace onSignOut={() => void api('/auth/logout', { method: 'POST' }).then(onLogout).catch((failure: Error) => setError(failure.message))}
-    filesNavigation={<a className="nav active" href="/drive" aria-current="location"><Folder size={18} /> My files</a>}>
+    filesNavigation={<a className="nav active" href="/drive" aria-current="location"><Folder size={18} /> My Files</a>}>
     <main className="main"><div className="content">
       <FileSources active={provider} />
       <div className="page-title">
@@ -104,31 +121,52 @@ export function CloudFiles({ provider, onLogout }: { provider: Provider; onLogou
           }} />
         </>}
       </div>
-      {folder && <button className="cloud-back" disabled={busy} onClick={() => navigate(trail.slice(0, -1))}>
-        <ArrowLeft size={16} /> {trail.at(-2)?.name ?? name}
-      </button>}
       {uploading && <p role="status">Uploading {uploading}</p>}
       {uploadError && <p className="error cloud-upload-error" role="alert">{uploadError}</p>}
       {error && <div className="banner"><span role="alert">{error}</span>
         <a href="/connections">Account connections</a></div>}
-      {!listing && !error && <p role="status">Loading files</p>}
+      {!listing && !error && <FileLoading />}
       {listing && <section className="file-panel" aria-label={name + ' files'}>
-        {listing.items.length ? <ul className="cloud-file-list">
-          {listing.items.map((entry, index) => <li key={entry.id + ':' + index}>
-            {entry.folder ? <>
-              <Folder size={18} aria-hidden="true" />
+        <div className="panel-top">
+          <nav className="breadcrumbs" aria-label="Folder path">
+            {[{ id: '', name }, ...trail].map((crumb, index) => <span key={crumb.id}>
+              {index > 0 && <ChevronRight size={13} aria-hidden="true" />}
+              {index === trail.length ? <span aria-current="location">{crumb.name}</span>
+                : <button disabled={busy} onClick={() => navigate(trail.slice(0, index))}>{crumb.name}</button>}
+            </span>)}
+          </nav>
+          <div className="panel-actions">
+            <label className="search native-search"><Search size={16} aria-hidden="true" />
+              <input type="search" aria-label="Search loaded cloud files" placeholder="Search loaded files" maxLength={180}
+                value={query} onChange={(event) => setQuery(event.currentTarget.value)} />
+            </label>
+            <select aria-label="Sort loaded cloud files" value={sort} onChange={(event) => setSort(event.currentTarget.value as typeof sort)}>
+              <option value="name">Name</option><option value="size">Largest first</option>
+            </select>
+            <div className="toggle">
+              <button className="icon" aria-label="List view" aria-pressed={!grid} onClick={() => selectView(false)}><List size={17} /></button>
+              <button className="icon" aria-label="Grid view" aria-pressed={grid} onClick={() => selectView(true)}><Grid2X2 size={16} /></button>
+            </div>
+          </div>
+        </div>
+        {visible.length ? <ul className={grid ? 'file-grid native-file-grid' : 'cloud-file-list'}>
+          {visible.map((entry, index) => <li key={entry.id + ':' + index} className={grid ? 'file-tile' : undefined}>
+            {entry.folder ? <div className="entry-name">
+              <span className="entry-icon folder"><Folder size={grid ? 28 : 18} aria-hidden="true" /></span>
               <button className="text-button file-name" title={entry.name} disabled={busy}
                 onClick={() => navigate([...trail, entry])}>{entry.name}</button>
-            </> : <>
-              <File size={18} aria-hidden="true" />
-              <a className="file-name" title={entry.name}
-                href={entry.openUrl ?? '/api' + endpoint + '/download?' + new URLSearchParams({ id: entry.id })}
-                target={entry.openUrl ? '_blank' : undefined} rel={entry.openUrl ? 'noopener noreferrer' : undefined}>{entry.name}</a>
+            </div> : <>
+              <div className="entry-name">
+                <span className="entry-icon"><File size={grid ? 28 : 18} aria-hidden="true" /></span>
+                <a className="file-name" title={entry.name}
+                  href={entry.openUrl ?? '/api' + endpoint + '/download?' + new URLSearchParams({ id: entry.id })}
+                  target={entry.openUrl ? '_blank' : undefined} rel={entry.openUrl ? 'noopener noreferrer' : undefined}>{entry.name}</a>
+              </div>
               <span className="cloud-file-size">{entry.size === null ? '' : formatSize(entry.size)}
                 {entry.openUrl ? <ExternalLink size={15} aria-hidden="true" /> : <ArrowDownToLine size={15} aria-hidden="true" />}</span>
             </>}
           </li>)}
-        </ul> : <p className="empty">This folder is empty.</p>}
+        </ul> : <p className="empty">{filter ? 'No matching loaded files.' : 'This folder is empty.'}</p>}
         {listing.next && <div className="paging"><button disabled={busy} onClick={() => void loadMore()}>
           {paging ? 'Loading files' : 'Load more'}
         </button></div>}

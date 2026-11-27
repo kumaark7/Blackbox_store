@@ -42,10 +42,16 @@ type PublicEntry = Omit<NodeRow, 'objectKey' | 'state' | 'sha256' | 'storageForm
 type BrowseOptions = {
   parentId: string;
   search?: string;
+  priority?: Importance;
+  provider?: PublicEntry['cloudCopies'][number];
   sort: 'name' | 'updated' | 'size';
   offset: number;
   limit: number;
   trash?: boolean;
+};
+const replicaTables = {
+  'google-drive': 'google_drive_replicas', mega: 'mega_replicas',
+  terabox: 'terabox_replicas', telegram: 'telegram_replicas',
 };
 
 const columns = `nodes.id, nodes.parent_id AS parentId, nodes.name, nodes.kind, nodes.state,
@@ -127,7 +133,12 @@ export class FileIndex {
   }
 
   browse(options: BrowseOptions) {
-    const { parentId, search, sort, offset, limit, trash } = options;
+    const { parentId, search, priority, provider, sort, offset, limit, trash } = options;
+    const filters = [
+      priority ? 'AND nodes.importance = ?' : '',
+      provider ? `AND EXISTS(SELECT 1 FROM ${replicaTables[provider]} WHERE node_id = nodes.id AND verified = 1)` : '',
+    ].join(' ');
+    const bindings = [...(priority ? [priority] : []), limit + 1, offset];
     const ordering = {
       name: "nodes.kind DESC, nodes.name COLLATE NOCASE, nodes.id",
       updated: "nodes.updated_at DESC, nodes.id",
@@ -141,7 +152,7 @@ export class FileIndex {
         FROM nodes LEFT JOIN trash_purges ON trash_purges.node_id = nodes.id
         WHERE state = 'trash' ${tail}
       `).all(limit + 1, offset) as NodeRow[];
-    } else if (search) {
+    } else if (search || ((priority || provider) && parentId === ROOT_ID)) {
       rows = this.db.prepare(`
         WITH RECURSIVE live(id) AS (
           SELECT id FROM nodes WHERE id = ?
@@ -149,13 +160,13 @@ export class FileIndex {
           SELECT nodes.id FROM nodes JOIN live ON nodes.parent_id = live.id WHERE nodes.state = 'ready'
         )
         SELECT ${columns} FROM live JOIN nodes USING(id)
-        WHERE nodes.id != ? AND instr(lower(nodes.name), lower(?)) > 0 ${tail}
-      `).all(ROOT_ID, ROOT_ID, search, limit + 1, offset) as NodeRow[];
+        WHERE nodes.id != ? AND instr(lower(nodes.name), lower(?)) > 0 ${filters} ${tail}
+      `).all(ROOT_ID, ROOT_ID, search ?? '', ...bindings) as NodeRow[];
     } else {
       this.folder(parentId);
       rows = this.db.prepare(`
-        SELECT ${columns} FROM nodes WHERE parent_id = ? AND state = 'ready' ${tail}
-      `).all(parentId, limit + 1, offset) as NodeRow[];
+        SELECT ${columns} FROM nodes WHERE parent_id = ? AND state = 'ready' ${filters} ${tail}
+      `).all(parentId, ...bindings) as NodeRow[];
     }
     return {
       items: rows.slice(0, limit).map(publicFields),

@@ -529,6 +529,15 @@ test('folder, binary upload, download, edit, trash and restore work over HTTP', 
   const entry = upload.json();
   assert.equal(entry.size, payload.length);
   assert.equal(entry.protection, 'degraded');
+  const matchingPriority = await app.inject({ url: '/api/entries?priority=highly-important&limit=1', headers });
+  assert.equal(matchingPriority.statusCode, 200, matchingPriority.body);
+  assert.deepEqual(matchingPriority.json().items.map(({ id }: { id: string }) => id), [entry.id]);
+  assert.equal(matchingPriority.json().nextOffset, null);
+  const nestedPriority = await app.inject({ url: '/api/entries?parentId=' + parentId + '&priority=important', headers });
+  assert.deepEqual(nestedPriority.json().items, []);
+  const missingReplica = await app.inject({ url: '/api/entries?provider=google-drive&priority=highly-important', headers });
+  assert.deepEqual(missingReplica.json().items, []);
+  assert.equal((await app.inject({ url: '/api/entries?provider=unknown', headers })).statusCode, 400);
   const downloadUrl = '/api/files/' + entry.id + '/download';
 
   assert.equal((await app.inject(downloadUrl)).statusCode, 401);
